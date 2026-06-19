@@ -3,8 +3,10 @@ import io
 import json
 import logging
 import os
+import socket
 import urllib.request
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 import qrcode
 import qrcode.image.svg
@@ -182,6 +184,88 @@ HOMEBRIDGE_CONFIG = {
     "username": "CC:22:3D:E3:CE:30",
 }
 
+# ── provisioning ───────────────────────────────────────────────────────────
+
+PROVISIONING_DIR = Path(os.getenv("PROVISIONING_DIR", "/data/provisioning"))
+PROVISIONING_SOCKET = Path("/tmp/hayward-provisioning.sock")
+
+
+def _provisioning_via_socket(ssid: str, password: str) -> dict:
+    """Send WiFi credentials to the host provisioning service via Unix socket."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(str(PROVISIONING_SOCKET))
+        sock.send(json.dumps({
+            "action": "set_wifi", "ssid": ssid, "password": password,
+        }).encode())
+        resp = sock.recv(4096)
+        return json.loads(resp.decode())
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+    finally:
+        sock.close()
+
+
+def _provisioning_status_via_socket() -> dict:
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(str(PROVISIONING_SOCKET))
+        sock.send(json.dumps({"action": "status"}).encode())
+        resp = sock.recv(4096)
+        return json.loads(resp.decode())
+    except Exception:
+        return {"connected": None, "ssid": None, "advertising": None,
+                "note": "Provisioning service not reachable"}
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _provisioning_save_file(ssid: str, password: str) -> dict:
+    """Fallback: save credentials to a file for the host service to pick up."""
+    try:
+        PROVISIONING_DIR.mkdir(parents=True, exist_ok=True)
+        (PROVISIONING_DIR / "wifi_request.json").write_text(json.dumps({
+            "ssid": ssid, "password": password,
+        }))
+        return {"ok": True, "message": "Credentials saved to provisioning directory"}
+    except PermissionError:
+        return {"ok": False, "message": "Cannot write provisioning directory — install the host provisioning service (see README)"}
+    except OSError:
+        return {"ok": False, "message": "Provisioning directory not available — install the host provisioning service (see README)"}
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@app.get("/api/provisioning/status")
+def get_provisioning_status():
+    result = _provisioning_status_via_socket()
+    # Also note whether we can save requests
+    result["request_dir"] = str(PROVISIONING_DIR)
+    result["request_dir_writable"] = os.access(str(PROVISIONING_DIR), os.W_OK) if PROVISIONING_DIR.exists() else False
+    return result
+
+
+@app.post("/api/provisioning/wifi")
+def set_provisioning_wifi(data: dict):
+    ssid = data.get("ssid", "").strip()
+    password = data.get("password", "").strip()
+    if not ssid:
+        return {"ok": False, "message": "SSID is required"}
+
+    # Try Unix socket first (provisioning service running on host)
+    result = _provisioning_via_socket(ssid, password)
+    if result.get("ok"):
+        return result
+
+    # Fallback: save to file for host-side service
+    result = _provisioning_save_file(ssid, password)
+    return result
+
 
 def _generate_qr_svg(data: str) -> str:
     factory = qrcode.image.svg.SvgPathImage
@@ -190,16 +274,44 @@ def _generate_qr_svg(data: str) -> str:
 
 
 def _fetch_homebridge_setup_uri() -> str | None:
-    for path in ("/api/status/pairing", "/api/auth/settings"):
-        try:
-            req = urllib.request.Request(f"http://homebridge:8581{path}", method="GET")
+    base = "http://homebridge:8581"
+
+    # Strategy 1: try without auth (config-ui-x disableLocalAuth may allow it)
+    try:
+        req = urllib.request.Request(f"{base}/api/status/pairing", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            body = json.loads(resp.read())
+        uri = body.get("setupUri")
+        if uri:
+            return uri
+    except Exception:
+        pass
+
+    # Strategy 2: try JWT login with admin/admin
+    try:
+        login_body = json.dumps({"username": "admin", "password": "admin"}).encode()
+        req = urllib.request.Request(
+            f"{base}/api/auth/login",
+            data=login_body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            token = json.loads(resp.read()).get("access_token")
+        if token:
+            req = urllib.request.Request(
+                f"{base}/api/status/pairing",
+                headers={"Authorization": f"Bearer {token}"},
+                method="GET",
+            )
             with urllib.request.urlopen(req, timeout=3) as resp:
                 body = json.loads(resp.read())
-            uri = body.get("setupUri") or body.get("setup_uri")
+            uri = body.get("setupUri")
             if uri:
                 return uri
-        except Exception:
-            continue
+    except Exception:
+        pass
+
     return None
 
 

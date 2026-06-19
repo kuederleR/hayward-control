@@ -184,6 +184,53 @@ The file `docker-compose.rpi.yml` provides the RPi-specific configuration:
 Without this overlay, the backend starts in a limited mode: no GPIO access, no
 1-Wire, and the sensor reads as &ldquo;Not Connected&rdquo;.
 
+## Bluetooth Provisioning
+
+The system includes a Bluetooth provisioning service that lets you change WiFi
+credentials when you can no longer reach the Pi over the network.
+
+### How it works
+
+A Python server (`provisioning/provisioning_server.py`) runs as a systemd
+service on the Raspberry Pi host. It advertises as **Hayward-HeatPro** over
+Bluetooth Classic SPP (Serial Port Profile) and listens for WiFi credentials.
+
+### Install
+
+```bash
+cd provisioning
+sudo ./install.sh
+```
+
+This copies the server to `/usr/local/bin`, installs a systemd service, and
+starts it.
+
+### Use
+
+1. Open your phone's Bluetooth settings and pair with **Hayward-HeatPro**
+2. Open a serial terminal app:
+   - **Android**: [Serial Bluetooth Terminal](https://play.google.com/store/apps/details?id=de.kai_morich.serial_bluetooth_terminal)
+   - **iOS**: [Bluetooth Serial](https://apps.apple.com/app/bluetooth-serial/id1398921286)
+3. Connect to the Hayward-HeatPro SPP channel
+4. Send this JSON (replace with your network):
+   ```json
+   {"ssid":"MyWiFi","password":"secret"}
+   ```
+5. The Pi responds with `OK`, saves the config to `wpa_supplicant.conf`, and
+   reconnects.
+
+### Via web UI (when WiFi is still up)
+
+The **Network Settings** card in the web UI shows current WiFi status and a
+form to change networks. This saves credentials to the provisioning service
+or to a shared volume for the host service to pick up.
+
+### Logs
+
+```bash
+journalctl -u hayward-provisioning -f
+```
+
 ## Project Structure
 
 ```
@@ -204,6 +251,10 @@ hayward-control/
 ├── homebridge/
 │   ├── Dockerfile
 │   └── config.json              # HomeBridge accessories config
+├── provisioning/
+│   ├── provisioning_server.py   # Bluetooth RFCOMM provisioning server
+│   ├── install.sh               # One-command installer
+│   └── hayward-provisioning.service  # systemd unit file
 └── README.md
 ```
 

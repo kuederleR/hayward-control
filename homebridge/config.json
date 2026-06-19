@@ -23,5 +23,15 @@
       "temperature_pattern": "\"temperature\":\\s*([\\d.]+)"
     }
   ],
-  "platforms": []
+  "platforms": [
+    {
+      "platform": "config",
+      "name": "config",
+      "port": 8581,
+      "auth": {
+        "type": "form",
+        "disableLocalAuth": true
+      }
+    }
+  ]
 }

@@ -68,6 +68,17 @@ body{min-height:100dvh;display:flex;flex-direction:column}
 .footer{text-align:center;padding:16px 0 24px;font-size:0.75rem;color:var(--text-secondary)}
 .error-toast{background:var(--red);color:white;padding:10px 16px;border-radius:10px;font-size:0.875rem;text-align:center;margin-bottom:12px;display:none;animation:fadeIn 0.2s}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.provisioning-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:0.9375rem}
+.provisioning-label{color:var(--text-secondary)}
+.provisioning-value{font-weight:600}
+.provisioning-details{margin-top:8px}
+.provisioning-details summary{cursor:pointer;font-size:0.875rem;color:var(--blue);padding:4px 0}
+.provisioning-form{margin-top:8px}
+.provisioning-result{font-size:0.8125rem;padding:6px 0;color:var(--text-secondary)}
+.provisioning-result.ok{color:var(--green)}
+.provisioning-result.err{color:var(--red)}
+.provisioning-note{font-size:0.8125rem;color:var(--text-secondary);margin-top:8px;line-height:1.5}
+.provisioning-note code{font-size:0.75rem;background:var(--gray-light);padding:2px 6px;border-radius:4px;word-break:break-all}
 .hk-btn{width:36px;height:36px;border-radius:50%;border:2px solid var(--gray-border);background:var(--card-bg);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s;-webkit-tap-highlight-color:transparent;padding:0;color:var(--text-secondary)}
 .hk-btn svg{width:18px;height:18px}
 .hk-btn:active{background:var(--blue-light);transform:scale(0.92);color:var(--blue)}
@@ -166,6 +177,38 @@ body{min-height:100dvh;display:flex;flex-direction:column}
     <div class="manual-temp-row" id="manualTempRow" style="display:none">
       <input type="number" id="manualTemp" step="0.5" placeholder="Temperature °C">
       <button class="btn" id="manualTempBtn">Apply</button>
+    </div>
+  </section>
+
+  <section class="card" id="provisioningCard">
+    <div class="card-header">Network Settings</div>
+    <div id="provisioningBody">
+      <div class="provisioning-row">
+        <span class="provisioning-label">WiFi</span>
+        <span class="provisioning-value" id="wifiSsid">Loading…</span>
+      </div>
+      <div class="provisioning-row">
+        <span class="provisioning-label">Bluetooth</span>
+        <span class="provisioning-value" id="btName">Hayward-HeatPro</span>
+      </div>
+      <details class="provisioning-details">
+        <summary>Change WiFi network</summary>
+        <div class="provisioning-form">
+          <div class="manual-temp-row">
+            <input type="text" id="wifiSsidInput" placeholder="New WiFi SSID" autocomplete="off">
+          </div>
+          <div class="manual-temp-row">
+            <input type="password" id="wifiPassInput" placeholder="Password">
+            <button class="btn" id="wifiApplyBtn">Apply</button>
+          </div>
+          <div id="wifiResult" class="provisioning-result"></div>
+          <p class="provisioning-note">
+            <strong>No WiFi?</strong> Pair with <strong>Hayward-HeatPro</strong> via
+            Bluetooth from your phone, connect with a serial terminal app, and send:
+            <code>{"ssid":"...","password":"..."}</code>
+          </p>
+        </div>
+      </details>
     </div>
   </section>
 
@@ -309,6 +352,46 @@ document.addEventListener('DOMContentLoaded', () => {
     if (e.key === 'Enter') document.getElementById('manualTempBtn').click();
   });
 
+  // Provisioning / Network
+  async function updateProvisioning() {
+    try {
+      const data = await api('GET', '/api/provisioning/status');
+      document.getElementById('wifiSsid').textContent = data.ssid || 'Not connected';
+      document.getElementById('btName').textContent = data.advertising || 'Hayward-HeatPro';
+    } catch (e) {
+      // Provisioning service may not be installed — that's fine
+    }
+  }
+
+  document.getElementById('wifiApplyBtn').addEventListener('click', async () => {
+    const ssid = document.getElementById('wifiSsidInput').value.trim();
+    const password = document.getElementById('wifiPassInput').value;
+    const result = document.getElementById('wifiResult');
+    if (!ssid) {
+      result.textContent = 'Enter an SSID';
+      result.className = 'provisioning-result err';
+      return;
+    }
+    result.textContent = 'Applying…';
+    result.className = 'provisioning-result';
+    try {
+      const resp = await api('POST', '/api/provisioning/wifi', { ssid, password });
+      if (resp.ok) {
+        result.textContent = resp.message || 'WiFi config saved. Device will reconnect shortly.';
+        result.className = 'provisioning-result ok';
+      } else {
+        result.textContent = resp.message || 'Failed to apply config';
+        result.className = 'provisioning-result err';
+      }
+    } catch (e) {
+      result.textContent = 'Error: ' + e.message;
+      result.className = 'provisioning-result err';
+    }
+  });
+
+  // Fetch provisioning status on page load (separate from main poll)
+  updateProvisioning();
+
   // HomeKit modal
   const hkModal = document.getElementById('hkModal');
   const hkBody = document.getElementById('hkModalBody');
@@ -322,6 +405,9 @@ document.addEventListener('DOMContentLoaded', () => {
       if (data.qrSvg) {
         html += '<div class="modal-qr">' + data.qrSvg + '</div>';
       }
+      if (!data.setupUri) {
+        html += '<p style="font-size:0.8125rem;color:var(--orange);text-align:center;margin-bottom:12px">⚠ QR only encodes the pin — the Home app requires the full pairing URI. Enter the code manually below.</p>';
+      }
       html += '<div class="modal-code">';
       html += '<div class="code-label">Setup Code</div>';
       html += '<div class="code">' + data.pin + '</div>';
@@ -329,7 +415,7 @@ document.addEventListener('DOMContentLoaded', () => {
       html += '<ol class="modal-steps">';
       html += '<li>Open the Home app on your iOS device</li>';
       html += '<li>Tap <strong>+</strong> &rarr; <strong>Add Accessory</strong></li>';
-      html += '<li>Scan the QR code or tap <strong>Enter Code</strong> and enter <strong>' + data.pin + '</strong></li>';
+      html += '<li>' + (data.setupUri ? 'Scan the QR code with your iPhone camera' : 'Tap <strong>Enter Code</strong> and type <strong>' + data.pin + '</strong>') + '</li>';
       html += '<li>Wait for pairing to complete</li>';
       html += '</ol>';
       hkBody.innerHTML = html;

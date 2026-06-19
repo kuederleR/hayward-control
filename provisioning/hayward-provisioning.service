@@ -1,0 +1,15 @@
+[Unit]
+Description=Hayward HeatPro Bluetooth Provisioning
+After=bluetooth.service network.target
+Requires=bluetooth.service
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/hayward-provisioning-server
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
