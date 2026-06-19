@@ -6,6 +6,8 @@ services:
       - RELAY_GPIO_PIN=${RELAY_GPIO_PIN:-17}
       - DEMO_MODE=${DEMO_MODE:-false}
     restart: unless-stopped
+    volumes:
+      - homebridge_data:/homebridge:ro
 
   homebridge:
     build:

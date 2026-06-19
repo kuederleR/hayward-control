@@ -273,49 +273,69 @@ def _generate_qr_svg(data: str) -> str:
     return img.to_string()
 
 
-def _fetch_homebridge_setup_uri() -> str | None:
-    base = "http://localhost:8581"
+def _generate_setup_code(pincode: str, category: int, setup_id: str) -> str:
+    value_low = int(pincode.replace("-", "")) | (1 << 28)
+    value_high = category >> 1
 
-    # Strategy 1: try without auth (config-ui-x disableLocalAuth may allow it)
+    if category & 1:
+        value_low |= 1 << 31
+
+    combined = (value_high << 32) | value_low
+    alphabet = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    if combined == 0:
+        encoded = "0"
+    else:
+        parts = []
+        n = combined
+        while n:
+            parts.append(alphabet[n % 36])
+            n //= 36
+        encoded = "".join(reversed(parts))
+    encoded = encoded.zfill(9)
+    return f"X-HM://{encoded}{setup_id}"
+
+
+def _read_accessory_info() -> dict | None:
+    accessory_id = HOMEBRIDGE_CONFIG["username"].replace(":", "").upper()
+    candidates = [
+        f"/homebridge/persist/AccessoryInfo.{accessory_id}.json",
+        f"/var/lib/homebridge/persist/AccessoryInfo.{accessory_id}.json",
+    ]
+    for path in candidates:
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (FileNotFoundError, PermissionError):
+            continue
+        except Exception as e:
+            logger.warning("failed to read %s: %s", path, e)
+    return None
+
+
+def _fetch_setup_code_via_api() -> str | None:
+    base = "http://localhost:8581"
     try:
         req = urllib.request.Request(f"{base}/api/server/pairing", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             body = json.loads(resp.read())
-        uri = body.get("setupCode")
-        if uri:
-            return uri
-        logger.warning("pairing API returned no setupCode: %s", body)
-    except Exception as e:
-        logger.warning("pairing API (no auth) failed: %s", e)
+        return body.get("setupCode")
+    except Exception:
+        return None
 
-    # Strategy 2: try JWT login with admin/admin
-    try:
-        login_body = json.dumps({"username": "admin", "password": "admin"}).encode()
-        req = urllib.request.Request(
-            f"{base}/api/auth/login",
-            data=login_body,
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=3) as resp:
-            body = json.loads(resp.read())
-        token = body.get("access_token")
-        if token:
-            req = urllib.request.Request(
-                f"{base}/api/server/pairing",
-                headers={"Authorization": f"Bearer {token}"},
-                method="GET",
-            )
-            with urllib.request.urlopen(req, timeout=3) as resp:
-                body = json.loads(resp.read())
-            uri = body.get("setupCode")
-            if uri:
-                return uri
-            logger.warning("pairing API (with auth) returned no setupCode: %s", body)
-        else:
-            logger.warning("login returned no token: %s", body)
-    except Exception as e:
-        logger.warning("pairing API (with auth) failed: %s", e)
+
+def _fetch_homebridge_setup_uri() -> str | None:
+    info = _read_accessory_info()
+    if info:
+        try:
+            uri = _generate_setup_code(info["pincode"], info["category"], info["setupID"])
+            logger.info("read setup code from AccessoryInfo file")
+            return uri
+        except Exception as e:
+            logger.warning("failed to generate setup code from file: %s", e)
+
+    uri = _fetch_setup_code_via_api()
+    if uri:
+        return uri
 
     return None
 
