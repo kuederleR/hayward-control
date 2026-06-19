@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import urllib.request
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -207,7 +208,7 @@ def _provisioning_via_socket(ssid: str, password: str) -> dict:
         sock.close()
 
 
-def _provisioning_status_via_socket() -> dict:
+def _provisioning_status_via_socket() -> dict | None:
     try:
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         sock.settimeout(5)
@@ -216,13 +217,25 @@ def _provisioning_status_via_socket() -> dict:
         resp = sock.recv(4096)
         return json.loads(resp.decode())
     except Exception:
-        return {"connected": None, "ssid": None, "advertising": None,
-                "note": "Provisioning service not reachable"}
+        return None
     finally:
         try:
             sock.close()
         except Exception:
             pass
+
+
+def _host_wifi_status() -> dict:
+    ssid = None
+    try:
+        result = subprocess.run(
+            ["iwgetid", "-r"], capture_output=True, text=True, timeout=5
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            ssid = result.stdout.strip()
+    except Exception:
+        pass
+    return {"ssid": ssid, "connected": ssid is not None}
 
 
 def _provisioning_save_file(ssid: str, password: str) -> dict:
@@ -244,9 +257,13 @@ def _provisioning_save_file(ssid: str, password: str) -> dict:
 @app.get("/api/provisioning/status")
 def get_provisioning_status():
     result = _provisioning_status_via_socket()
-    # Also note whether we can save requests
-    result["request_dir"] = str(PROVISIONING_DIR)
-    result["request_dir_writable"] = os.access(str(PROVISIONING_DIR), os.W_OK) if PROVISIONING_DIR.exists() else False
+    if result is None:
+        result = _host_wifi_status()
+        result["advertising"] = None
+        result["note"] = "Provisioning service not running — WiFi status from host"
+    result.setdefault("request_dir", str(PROVISIONING_DIR))
+    result.setdefault("request_dir_writable",
+                      os.access(str(PROVISIONING_DIR), os.W_OK) if PROVISIONING_DIR.exists() else False)
     return result
 
 
