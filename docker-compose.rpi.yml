@@ -1,0 +1,6 @@
+services:
+  backend:
+    privileged: true
+    volumes:
+      - /sys/bus/w1:/sys/bus/w1:ro
+      - /sys/devices/w1_bus_master1:/sys/devices/w1_bus_master1:ro

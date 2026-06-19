@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<title>Hayward HeatPro</title>
+<style>
+:root {
+  --blue: #007aff;
+  --blue-dark: #0056b3;
+  --blue-light: #e8f4ff;
+  --orange: #ff9500;
+  --green: #34c759;
+  --red: #ff3b30;
+  --gray: #8e8e93;
+  --gray-light: #f2f2f7;
+  --gray-border: #d1d1d6;
+  --text: #1c1c1e;
+  --text-secondary: #6c6c70;
+  --card-radius: 16px;
+  --card-bg: #ffffff;
+  --bg: #f2f2f7;
+  --shadow: 0 2px 12px rgba(0,0,0,0.08);
+}
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;font-size:16px;color:var(--text);background:var(--bg);-webkit-text-size-adjust:100%}
+body{min-height:100dvh;display:flex;flex-direction:column}
+.app{max-width:480px;margin:0 auto;padding:16px;width:100%;flex:1}
+.header{display:flex;align-items:center;justify-content:space-between;padding:8px 0 16px}
+.header h1{font-size:1.25rem;font-weight:700;display:flex;align-items:center;gap:8px}
+.header h1 svg{width:24px;height:24px}
+.sensor-status{display:flex;align-items:center;gap:6px;font-size:0.75rem;color:var(--text-secondary)}
+.sensor-dot{width:8px;height:8px;border-radius:50%;background:var(--gray);display:inline-block;flex-shrink:0}
+.sensor-dot.connected{background:var(--green)}
+.sensor-dot.disconnected{background:var(--red)}
+.card{background:var(--card-bg);border-radius:var(--card-radius);padding:20px;margin-bottom:16px;box-shadow:var(--shadow)}
+.card-header{font-size:0.8125rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--text-secondary);margin-bottom:12px}
+.temp-card{text-align:center;padding:28px 20px;position:relative;overflow:hidden}
+.temp-card::before{content:'';position:absolute;top:0;left:0;right:0;height:4px;background:linear-gradient(90deg,var(--blue),#5ac8fa)}
+.temp-value{font-size:4rem;font-weight:300;line-height:1;color:var(--text)}
+.temp-value .temp-unit{font-size:1.5rem;font-weight:400;color:var(--text-secondary);vertical-align:super}
+.temp-label{font-size:0.875rem;color:var(--text-secondary);margin-top:4px}
+.target-row{display:flex;align-items:center;justify-content:center;gap:24px}
+.target-value{font-size:2.5rem;font-weight:300;min-width:120px;text-align:center}
+.target-value .temp-unit{font-size:1rem;vertical-align:super}
+.btn-icon{width:48px;height:48px;border-radius:50%;border:2px solid var(--gray-border);background:var(--card-bg);font-size:1.5rem;display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--blue);transition:all 0.15s;-webkit-tap-highlight-color:transparent;user-select:none}
+.btn-icon:active{background:var(--blue-light);transform:scale(0.92)}
+.btn-icon:disabled{opacity:0.4;pointer-events:none}
+.toggle-row{display:flex;align-items:center;justify-content:space-between;padding:8px 0;cursor:pointer;gap:12px}
+.toggle-row span{font-size:0.9375rem}
+.toggle-switch{position:relative;width:48px;height:30px;flex-shrink:0}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-track{position:absolute;inset:0;background:var(--gray-border);border-radius:15px;transition:background 0.2s;cursor:pointer}
+.toggle-track::after{content:'';position:absolute;top:3px;left:3px;width:24px;height:24px;border-radius:50%;background:white;box-shadow:0 1px 3px rgba(0,0,0,0.2);transition:transform 0.2s}
+.toggle-switch input:checked+.toggle-track{background:var(--green)}
+.toggle-switch input:checked+.toggle-track::after{transform:translateX(18px)}
+.power-btn{width:100%;padding:16px;border-radius:12px;border:none;font-size:1.125rem;font-weight:600;cursor:pointer;transition:all 0.15s;display:flex;align-items:center;justify-content:center;gap:8px;-webkit-tap-highlight-color:transparent;user-select:none}
+.power-btn.on{background:var(--orange);color:white}
+.power-btn.off{background:var(--gray-light);color:var(--text-secondary)}
+.power-btn:active{transform:scale(0.98)}
+.heater-status{text-align:center;font-size:0.8125rem;color:var(--text-secondary);margin-top:8px}
+.heater-status.heating{color:var(--orange);font-weight:600}
+.manual-temp-row{display:flex;gap:8px;margin-top:12px;align-items:center}
+.manual-temp-row input{flex:1;padding:10px 12px;border:1px solid var(--gray-border);border-radius:10px;font-size:1rem;outline:none;transition:border-color 0.2s}
+.manual-temp-row input:focus{border-color:var(--blue)}
+.btn{background:var(--blue);color:white;border:none;border-radius:10px;padding:10px 16px;font-size:0.9375rem;font-weight:600;cursor:pointer;transition:opacity 0.15s;white-space:nowrap}
+.btn:active{opacity:0.8}
+.footer{text-align:center;padding:16px 0 24px;font-size:0.75rem;color:var(--text-secondary)}
+.error-toast{background:var(--red);color:white;padding:10px 16px;border-radius:10px;font-size:0.875rem;text-align:center;margin-bottom:12px;display:none;animation:fadeIn 0.2s}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-4px)}to{opacity:1;transform:translateY(0)}}
+.hk-btn{width:36px;height:36px;border-radius:50%;border:2px solid var(--gray-border);background:var(--card-bg);cursor:pointer;display:flex;align-items:center;justify-content:center;flex-shrink:0;transition:all 0.15s;-webkit-tap-highlight-color:transparent;padding:0;color:var(--text-secondary)}
+.hk-btn svg{width:18px;height:18px}
+.hk-btn:active{background:var(--blue-light);transform:scale(0.92);color:var(--blue)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:100;display:none;align-items:center;justify-content:center;padding:16px;animation:fadeIn 0.2s}
+.modal-overlay.open{display:flex}
+.modal{background:var(--card-bg);border-radius:var(--card-radius);padding:28px 24px 20px;max-width:400px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,0.2);position:relative;max-height:90dvh;overflow-y:auto}
+.modal-close{position:absolute;top:12px;right:12px;width:32px;height:32px;border-radius:50%;border:none;background:var(--gray-light);cursor:pointer;font-size:1.125rem;display:flex;align-items:center;justify-content:center;color:var(--text-secondary);transition:background 0.15s}
+.modal-close:active{background:var(--gray-border)}
+.modal h2{font-size:1.125rem;font-weight:700;margin-bottom:4px;text-align:center}
+.modal-subtitle{font-size:0.8125rem;color:var(--text-secondary);text-align:center;margin-bottom:20px}
+.modal-qr{display:flex;justify-content:center;margin-bottom:16px}
+.modal-qr svg{width:200px;height:200px;border-radius:12px;background:white;padding:8px}
+.modal-code{text-align:center;margin-bottom:20px}
+.modal-code .code{font-size:2rem;font-weight:700;letter-spacing:4px;font-family:monospace;color:var(--text)}
+.modal-code .code-label{font-size:0.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:2px}
+.modal-steps{text-align:left;font-size:0.875rem;color:var(--text-secondary);line-height:1.6;padding:0;margin:0;list-style:none}
+.modal-steps li{padding:4px 0;display:flex;gap:8px;align-items:flex-start}
+.modal-steps li::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--blue);flex-shrink:0;margin-top:7px}
+.modal-spinner{text-align:center;padding:40px 0;color:var(--text-secondary);font-size:0.875rem}
+@media(prefers-color-scheme:dark){
+  :root{--bg:#1c1c1e;--card-bg:#2c2c2e;--text:#f5f5f7;--text-secondary:#98989d;--gray-border:#38383a;--gray-light:#3a3a3c;--blue-light:#1a3a5c;--shadow:0 2px 12px rgba(0,0,0,0.3)}
+  .btn-icon{border-color:var(--gray-border)}
+  .modal-qr svg{background:white}
+}
+</style>
+</head>
+<body>
+<div class="app" role="main">
+  <header class="header">
+    <h1>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 2v4M6 12H2M22 12h-4M19.07 4.93l-2.83 2.83M4.93 4.93l2.83 2.83M12 22v-4"/>
+        <path d="M12 7a5 5 0 0 0 0 10 5 5 0 0 0 0-10z"/>
+        <path d="M12 12h.01"/>
+      </svg>
+      Hayward HeatPro
+    </h1>
+    <div style="display:flex;align-items:center;gap:8px">
+      <div class="sensor-status">
+        <span class="sensor-dot" id="sensorDot"></span>
+        <span id="sensorLabel">Loading...</span>
+      </div>
+      <button class="hk-btn" id="hkBtn" aria-label="HomeKit setup" title="HomeKit Setup">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          <polyline points="9 22 9 12 15 12 15 22"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div class="error-toast" id="errorToast"></div>
+
+  <section class="card temp-card">
+    <div class="temp-value">
+      <span id="currentTemp">--</span><span class="temp-unit">°C</span>
+    </div>
+    <div class="temp-label">Pool Temperature</div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">Thermostat</div>
+    <div class="target-row">
+      <button class="btn-icon" id="tempDown" aria-label="Decrease target temperature">−</button>
+      <div class="target-value">
+        <span id="targetTemp">28</span><span class="temp-unit">°C</span>
+      </div>
+      <button class="btn-icon" id="tempUp" aria-label="Increase target temperature">+</button>
+    </div>
+    <label class="toggle-row">
+      <span>Auto Mode</span>
+      <div class="toggle-switch">
+        <input type="checkbox" id="autoToggle">
+        <span class="toggle-track"></span>
+      </div>
+    </label>
+  </section>
+
+  <section class="card">
+    <div class="card-header">Heater</div>
+    <button class="power-btn off" id="heaterBtn">
+      <span>⏻</span> <span id="heaterLabel">Off</span>
+    </button>
+    <div class="heater-status" id="heaterStatus">Idle</div>
+  </section>
+
+  <section class="card">
+    <div class="card-header">Developer Options</div>
+    <label class="toggle-row">
+      <span>Demo Mode</span>
+      <div class="toggle-switch">
+        <input type="checkbox" id="demoToggle">
+        <span class="toggle-track"></span>
+      </div>
+    </label>
+    <div class="manual-temp-row" id="manualTempRow" style="display:none">
+      <input type="number" id="manualTemp" step="0.5" placeholder="Temperature °C">
+      <button class="btn" id="manualTempBtn">Apply</button>
+    </div>
+  </section>
+
+  <div class="modal-overlay" id="hkModal">
+    <div class="modal">
+      <button class="modal-close" id="hkModalClose">✕</button>
+      <h2>HomeKit Setup</h2>
+      <p class="modal-subtitle" id="hkModalName">Hayward HeatPro</p>
+      <div id="hkModalBody">
+        <div class="modal-spinner">Loading pairing info…</div>
+      </div>
+    </div>
+  </div>
+
+  <footer class="footer">
+    <p>Hayward HeatPro Control</p>
+  </footer>
+</div>
+
+<script>
+const POLL_INTERVAL = 3000;
+let state = {};
+
+function showError(msg) {
+  const el = document.getElementById('errorToast');
+  el.textContent = msg;
+  el.style.display = 'block';
+  setTimeout(() => { el.style.display = 'none'; }, 5000);
+}
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) {
+    opts.headers['Content-Type'] = 'application/json';
+    opts.body = JSON.stringify(body);
+  }
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(`API error: ${res.status}`);
+  if (res.headers.get('content-type')?.includes('json')) return res.json();
+  return res.text();
+}
+
+async function poll() {
+  try {
+    const data = await api('GET', '/api/status');
+    state = data;
+    updateUI(data);
+  } catch (e) {
+    showError('Connection lost — retrying...');
+  }
+}
+
+function updateUI(data) {
+  // Temperature
+  document.getElementById('currentTemp').textContent =
+    data.temperature != null ? data.temperature.toFixed(1) : '--';
+
+  // Sensor status
+  const dot = document.getElementById('sensorDot');
+  const label = document.getElementById('sensorLabel');
+  if (data.sensor_connected) {
+    dot.className = 'sensor-dot connected';
+    label.textContent = 'Connected';
+  } else {
+    dot.className = 'sensor-dot disconnected';
+    label.textContent = data.temperature != null ? 'Manual Input' : 'Not Connected';
+  }
+
+  // Target temperature
+  document.getElementById('targetTemp').textContent = Math.round(data.target_temperature);
+
+  // Auto mode
+  document.getElementById('autoToggle').checked = data.auto_mode;
+
+  // Heater
+  const btn = document.getElementById('heaterBtn');
+  const heaterLabel = document.getElementById('heaterLabel');
+  const heaterStatus = document.getElementById('heaterStatus');
+  if (data.relay_on) {
+    btn.className = 'power-btn on';
+    heaterLabel.textContent = 'On';
+    heaterStatus.className = 'heater-status heating';
+    heaterStatus.textContent = data.auto_mode ? 'Auto — Heating' : 'Manual — On';
+  } else {
+    btn.className = 'power-btn off';
+    heaterLabel.textContent = 'Off';
+    heaterStatus.className = 'heater-status';
+    heaterStatus.textContent = data.auto_mode ? 'Auto — Standby' : 'Manual — Off';
+  }
+
+  // Demo mode
+  document.getElementById('demoToggle').checked = data.demo_mode;
+  document.getElementById('manualTempRow').style.display = data.demo_mode ? 'flex' : 'none';
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  poll();
+  setInterval(poll, POLL_INTERVAL);
+
+  // Temperature controls
+  document.getElementById('tempDown').addEventListener('click', async () => {
+    const newTemp = Math.max(10, (state.target_temperature || 28) - 1);
+    await api('POST', '/api/thermostat', { target_temperature: newTemp });
+    poll();
+  });
+
+  document.getElementById('tempUp').addEventListener('click', async () => {
+    const newTemp = Math.min(40, (state.target_temperature || 28) + 1);
+    await api('POST', '/api/thermostat', { target_temperature: newTemp });
+    poll();
+  });
+
+  // Auto mode toggle
+  document.getElementById('autoToggle').addEventListener('change', async (e) => {
+    await api('POST', '/api/thermostat', { enabled: e.target.checked });
+    poll();
+  });
+
+  // Heater toggle
+  document.getElementById('heaterBtn').addEventListener('click', async () => {
+    await api('POST', '/api/relay', { state: !state.relay_on });
+    poll();
+  });
+
+  // Demo mode toggle
+  document.getElementById('demoToggle').addEventListener('change', async (e) => {
+    await api('POST', '/api/mode', { demo: e.target.checked });
+    poll();
+  });
+
+  // Manual temperature
+  document.getElementById('manualTempBtn').addEventListener('click', async () => {
+    const input = document.getElementById('manualTemp');
+    const val = parseFloat(input.value);
+    if (isNaN(val)) return;
+    await api('POST', '/api/temperature/manual', { temperature: val });
+    poll();
+  });
+
+  document.getElementById('manualTemp').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') document.getElementById('manualTempBtn').click();
+  });
+
+  // HomeKit modal
+  const hkModal = document.getElementById('hkModal');
+  const hkBody = document.getElementById('hkModalBody');
+
+  function openHkModal() {
+    hkModal.classList.add('open');
+    hkBody.innerHTML = '<div class="modal-spinner">Loading pairing info…</div>';
+    api('GET', '/api/homekit/setup').then(data => {
+      document.getElementById('hkModalName').textContent = data.name;
+      let html = '';
+      if (data.qrSvg) {
+        html += '<div class="modal-qr">' + data.qrSvg + '</div>';
+      }
+      html += '<div class="modal-code">';
+      html += '<div class="code-label">Setup Code</div>';
+      html += '<div class="code">' + data.pin + '</div>';
+      html += '</div>';
+      html += '<ol class="modal-steps">';
+      html += '<li>Open the Home app on your iOS device</li>';
+      html += '<li>Tap <strong>+</strong> &rarr; <strong>Add Accessory</strong></li>';
+      html += '<li>Scan the QR code or tap <strong>Enter Code</strong> and enter <strong>' + data.pin + '</strong></li>';
+      html += '<li>Wait for pairing to complete</li>';
+      html += '</ol>';
+      hkBody.innerHTML = html;
+    }).catch(() => {
+      hkBody.innerHTML = '<div class="modal-spinner" style="color:var(--red)">Failed to load pairing info. Make sure HomeBridge is running.</div>';
+    });
+  }
+
+  function closeHkModal() {
+    hkModal.classList.remove('open');
+  }
+
+  document.getElementById('hkBtn').addEventListener('click', openHkModal);
+  document.getElementById('hkModalClose').addEventListener('click', closeHkModal);
+  hkModal.addEventListener('click', (e) => {
+    if (e.target === hkModal) closeHkModal();
+  });
+});
+</script>
+</body>
+</html>

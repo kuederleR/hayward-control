@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      - RELAY_GPIO_PIN=${RELAY_GPIO_PIN:-17}
+      - DEMO_MODE=${DEMO_MODE:-false}
+    restart: unless-stopped
+
+  homebridge:
+    build: ./homebridge
+    ports:
+      - "51826:51826"
+      - "8581:8581"
+    volumes:
+      - homebridge_data:/homebridge
+    restart: unless-stopped
+    depends_on:
+      - backend
+
+volumes:
+  homebridge_data:
