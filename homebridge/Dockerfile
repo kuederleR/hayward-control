@@ -13,5 +13,5 @@ RUN cd /homebridge && \
     npm install /hayward-plugin && \
     chown -R 102:105 /home/homebridge /homebridge/node_modules /homebridge/package.json /homebridge/package-lock.json
 
-COPY config.json /homebridge/config.json
+COPY homebridge/config.json /homebridge/config.json
 RUN chown 102:105 /homebridge/config.json

@@ -8,7 +8,9 @@ services:
     restart: unless-stopped
 
   homebridge:
-    build: ./homebridge
+    build:
+      context: .
+      dockerfile: homebridge/Dockerfile
     network_mode: host
     volumes:
       - homebridge_data:/homebridge
