@@ -278,7 +278,7 @@ def _fetch_homebridge_setup_uri() -> str | None:
 
     # Strategy 1: try without auth (config-ui-x disableLocalAuth may allow it)
     try:
-        req = urllib.request.Request(f"{base}/api/status/pairing", method="GET")
+        req = urllib.request.Request(f"{base}/api/server/pairing", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             body = json.loads(resp.read())
         uri = body.get("setupUri")
@@ -302,7 +302,7 @@ def _fetch_homebridge_setup_uri() -> str | None:
         token = body.get("access_token")
         if token:
             req = urllib.request.Request(
-                f"{base}/api/status/pairing",
+                f"{base}/api/server/pairing",
                 headers={"Authorization": f"Bearer {token}"},
                 method="GET",
             )

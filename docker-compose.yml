@@ -12,6 +12,8 @@ services:
       context: .
       dockerfile: homebridge/Dockerfile
     network_mode: host
+    environment:
+      - HOMEBRIDGE_MDNS_ADVERTISER=ciao
     volumes:
       - homebridge_data:/homebridge
     restart: unless-stopped
