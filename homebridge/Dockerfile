@@ -1,17 +1,20 @@
 FROM homebridge/homebridge:latest
 
-# Install plugins into the HomeBridge storage directory so the
-# -P /var/lib/homebridge/node_modules flag finds them.
+# Install plugins globally and also add them to the storage directory's
+# package.json. The HB Supervisor runs npm install on startup looking at
+# /homebridge/package.json — listing plugins there ensures the supervisor
+# properly installs and maintains them in /homebridge/node_modules/ so
+# the -P /var/lib/homebridge/node_modules flag finds them.
 # Do NOT set USER homebridge — s6-overlay manages the
 # privilege drop internally and needs root for init.
 USER root
 
 RUN npm install -g homebridge-http-switch && \
     npm install -g homebridge-advanced-http-temperature-humidity && \
-    mkdir -p /homebridge/node_modules && \
-    ln -s /opt/homebridge/lib/node_modules/homebridge-http-switch /homebridge/node_modules/ && \
-    ln -s /opt/homebridge/lib/node_modules/homebridge-advanced-http-temperature-humidity /homebridge/node_modules/ && \
-    chown -R 102:105 /home/homebridge
+    cd /homebridge && \
+    npm init -y && \
+    npm install homebridge-http-switch homebridge-advanced-http-temperature-humidity && \
+    chown -R 102:105 /home/homebridge /homebridge/node_modules /homebridge/package.json /homebridge/package-lock.json
 
 COPY config.json /homebridge/config.json
 RUN chown 102:105 /homebridge/config.json
