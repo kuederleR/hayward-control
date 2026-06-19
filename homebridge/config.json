@@ -17,10 +17,10 @@
       "status_pattern": "\"state\":\\s*true"
     },
     {
-      "accessory": "HTTP-TEMPERATURE",
+      "accessory": "AdvancedHttpTemperatureHumidity",
       "name": "Pool Temperature",
-      "temperature_url": "http://localhost:8000/api/temperature",
-      "temperature_pattern": "\"temperature\":\\s*([\\d.]+)"
+      "url": "http://localhost:8000/api/temperature",
+      "disableHumidity": true
     }
   ],
   "platforms": [

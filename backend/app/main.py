@@ -90,7 +90,7 @@ def get_status():
 @app.get("/api/temperature")
 def get_temperature():
     temp = sensor.read(demo_mode)
-    return {"temperature": temp.temperature, "connected": temp.connected}
+    return {"temperature": temp.temperature, "humidity": None, "connected": temp.connected}
 
 
 @app.get("/api/relay")

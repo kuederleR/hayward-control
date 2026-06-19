@@ -7,9 +7,9 @@ FROM homebridge/homebridge:latest
 USER root
 
 RUN npm install -g homebridge-http-switch && \
-    npm install -g homebridge-http-temperature-humidity && \
+    npm install -g homebridge-advanced-http-temperature-humidity && \
     mkdir -p /homebridge/node_modules && \
-    for pkg in homebridge-http-switch homebridge-http-temperature-humidity; do \
+    for pkg in homebridge-http-switch homebridge-advanced-http-temperature-humidity; do \
         src="$(npm root -g)/$pkg"; \
         if [ -d "$$src" ]; then \
             ln -s "$$src" "/homebridge/node_modules/$pkg"; \
