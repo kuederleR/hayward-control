@@ -8,12 +8,8 @@
   "description": "Hayward HeatPro Pool Heater Controller",
   "accessories": [
     {
-      "accessory": "PoolHeater",
+      "accessory": "PoolThermostat",
       "name": "Pool Heater"
-    },
-    {
-      "accessory": "PoolTemperature",
-      "name": "Pool Temperature"
     }
   ],
   "platforms": [
