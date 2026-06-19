@@ -6,10 +6,18 @@ FROM homebridge/homebridge:latest
 # privilege drop internally and needs root for init.
 USER root
 
-RUN npm install --no-save --prefix /homebridge \
-        homebridge-http-switch \
-        homebridge-http-temperature-humidity \
-    && chown -R 102:105 /home/homebridge
+RUN npm install -g homebridge-http-switch && \
+    npm install -g homebridge-http-temperature-humidity && \
+    mkdir -p /homebridge/node_modules && \
+    for pkg in homebridge-http-switch homebridge-http-temperature-humidity; do \
+        src="$(npm root -g)/$pkg"; \
+        if [ -d "$$src" ]; then \
+            ln -s "$$src" "/homebridge/node_modules/$pkg"; \
+        else \
+            echo "ERROR: $pkg not found at $$src" >&2; exit 1; \
+        fi; \
+    done && \
+    chown -R 102:105 /home/homebridge
 
 COPY config.json /homebridge/config.json
 RUN chown 102:105 /homebridge/config.json
