@@ -1,19 +1,16 @@
 FROM homebridge/homebridge:latest
 
-# Install plugins globally and also add them to the storage directory's
-# package.json. The HB Supervisor runs npm install on startup looking at
-# /homebridge/package.json — listing plugins there ensures the supervisor
-# properly installs and maintains them in /homebridge/node_modules/ so
-# the -P /var/lib/homebridge/node_modules flag finds them.
-# Do NOT set USER homebridge — s6-overlay manages the
-# privilege drop internally and needs root for init.
+# Custom HomeBridge plugin that calls our backend API via HTTP.
+# Bundled as a local file dependency so it's independent of npm
+# registry and survives the HB Supervisor's startup npm install.
 USER root
 
-RUN npm install -g homebridge-http-switch && \
-    npm install -g homebridge-advanced-http-temperature-humidity && \
-    cd /homebridge && \
+COPY homebridge-plugin /hayward-plugin
+RUN chown -R 102:105 /hayward-plugin
+
+RUN cd /homebridge && \
     npm init -y && \
-    npm install homebridge-http-switch homebridge-advanced-http-temperature-humidity && \
+    npm install /hayward-plugin && \
     chown -R 102:105 /home/homebridge /homebridge/node_modules /homebridge/package.json /homebridge/package-lock.json
 
 COPY config.json /homebridge/config.json

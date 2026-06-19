@@ -8,19 +8,12 @@
   "description": "Hayward HeatPro Pool Heater Controller",
   "accessories": [
     {
-      "accessory": "HTTP-SWITCH",
-      "name": "Pool Heater",
-      "switchType": "stateful",
-      "on_url": "http://localhost:8000/api/relay/on",
-      "off_url": "http://localhost:8000/api/relay/off",
-      "status_url": "http://localhost:8000/api/relay",
-      "status_pattern": "\"state\":\\s*true"
+      "accessory": "PoolHeater",
+      "name": "Pool Heater"
     },
     {
-      "accessory": "AdvancedHttpTemperatureHumidity",
-      "name": "Pool Temperature",
-      "url": "http://localhost:8000/api/temperature",
-      "disableHumidity": true
+      "accessory": "PoolTemperature",
+      "name": "Pool Temperature"
     }
   ],
   "platforms": [

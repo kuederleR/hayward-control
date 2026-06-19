@@ -1,0 +1,12 @@
+{
+  "name": "homebridge-hayward-heatpro",
+  "version": "1.0.0",
+  "description": "HomeBridge plugin for Hayward HeatPro pool heater",
+  "main": "index.js",
+  "engines": {
+    "homebridge": ">=1.0.0",
+    "node": ">=18.0.0"
+  },
+  "keywords": ["homebridge-plugin"],
+  "license": "MIT"
+}
