@@ -11,15 +11,15 @@
       "accessory": "HTTP-SWITCH",
       "name": "Pool Heater",
       "switchType": "stateful",
-      "on_url": "http://backend:8000/api/relay/on",
-      "off_url": "http://backend:8000/api/relay/off",
-      "status_url": "http://backend:8000/api/relay",
+      "on_url": "http://localhost:8000/api/relay/on",
+      "off_url": "http://localhost:8000/api/relay/off",
+      "status_url": "http://localhost:8000/api/relay",
       "status_pattern": "\"state\":\\s*true"
     },
     {
       "accessory": "HTTP-TEMPERATURE",
       "name": "Pool Temperature",
-      "temperature_url": "http://backend:8000/api/temperature",
+      "temperature_url": "http://localhost:8000/api/temperature",
       "temperature_pattern": "\"temperature\":\\s*([\\d.]+)"
     }
   ],

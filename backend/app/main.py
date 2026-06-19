@@ -274,7 +274,7 @@ def _generate_qr_svg(data: str) -> str:
 
 
 def _fetch_homebridge_setup_uri() -> str | None:
-    base = "http://homebridge:8581"
+    base = "http://localhost:8581"
 
     # Strategy 1: try without auth (config-ui-x disableLocalAuth may allow it)
     try:
