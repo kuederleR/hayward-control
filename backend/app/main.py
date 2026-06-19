@@ -281,10 +281,10 @@ def _fetch_homebridge_setup_uri() -> str | None:
         req = urllib.request.Request(f"{base}/api/server/pairing", method="GET")
         with urllib.request.urlopen(req, timeout=3) as resp:
             body = json.loads(resp.read())
-        uri = body.get("setupUri")
+        uri = body.get("setupCode")
         if uri:
             return uri
-        logger.warning("pairing API returned no setupUri: %s", body)
+        logger.warning("pairing API returned no setupCode: %s", body)
     except Exception as e:
         logger.warning("pairing API (no auth) failed: %s", e)
 
@@ -308,10 +308,10 @@ def _fetch_homebridge_setup_uri() -> str | None:
             )
             with urllib.request.urlopen(req, timeout=3) as resp:
                 body = json.loads(resp.read())
-            uri = body.get("setupUri")
+            uri = body.get("setupCode")
             if uri:
                 return uri
-            logger.warning("pairing API (with auth) returned no setupUri: %s", body)
+            logger.warning("pairing API (with auth) returned no setupCode: %s", body)
         else:
             logger.warning("login returned no token: %s", body)
     except Exception as e:
