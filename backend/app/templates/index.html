@@ -121,6 +121,7 @@ body{min-height:100dvh;display:flex;flex-direction:column}
         <span class="sensor-dot" id="sensorDot"></span>
         <span id="sensorLabel">Loading...</span>
       </div>
+      <button class="hk-btn" id="unitBtn" aria-label="Toggle temperature unit" title="Toggle °C/°F" style="font-size:0.75rem;font-weight:700">°F</button>
       <button class="hk-btn" id="hkBtn" aria-label="HomeKit setup" title="HomeKit Setup">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
@@ -134,7 +135,7 @@ body{min-height:100dvh;display:flex;flex-direction:column}
 
   <section class="card temp-card">
     <div class="temp-value">
-      <span id="currentTemp">--</span><span class="temp-unit">°C</span>
+      <span id="currentTemp">--</span><span class="temp-unit" id="currentTempUnit">°C</span>
     </div>
     <div class="temp-label">Pool Temperature</div>
   </section>
@@ -144,7 +145,7 @@ body{min-height:100dvh;display:flex;flex-direction:column}
     <div class="target-row">
       <button class="btn-icon" id="tempDown" aria-label="Decrease target temperature">−</button>
       <div class="target-value">
-        <span id="targetTemp">28</span><span class="temp-unit">°C</span>
+        <span id="targetTemp">28</span><span class="temp-unit" id="targetTempUnit">°C</span>
       </div>
       <button class="btn-icon" id="tempUp" aria-label="Increase target temperature">+</button>
     </div>
@@ -175,7 +176,7 @@ body{min-height:100dvh;display:flex;flex-direction:column}
       </div>
     </label>
     <div class="manual-temp-row" id="manualTempRow" style="display:none">
-      <input type="number" id="manualTemp" step="0.5" placeholder="Temperature °C">
+      <input type="number" id="manualTemp" step="any" placeholder="Temperature">
       <button class="btn" id="manualTempBtn">Apply</button>
     </div>
   </section>
@@ -231,6 +232,17 @@ body{min-height:100dvh;display:flex;flex-direction:column}
 <script>
 const POLL_INTERVAL = 3000;
 let state = {};
+let useFahrenheit = localStorage.getItem('unit') === 'F';
+
+function cToF(c) { return c * 9 / 5 + 32; }
+function fToC(f) { return (f - 32) * 5 / 9; }
+function fmtTemp(c, opts) {
+  if (c == null) return '--';
+  const val = useFahrenheit ? cToF(c) : c;
+  const decimals = opts && opts.decimals != null ? opts.decimals : 1;
+  return val.toFixed(decimals);
+}
+function unitLabel() { return useFahrenheit ? '\u00B0F' : '\u00B0C'; }
 
 function showError(msg) {
   const el = document.getElementById('errorToast');
@@ -262,9 +274,13 @@ async function poll() {
 }
 
 function updateUI(data) {
+  const unit = unitLabel();
+  document.getElementById('currentTempUnit').textContent = unit;
+  document.getElementById('targetTempUnit').textContent = unit;
+  document.getElementById('manualTemp').placeholder = 'Temperature ' + unit;
+
   // Temperature
-  document.getElementById('currentTemp').textContent =
-    data.temperature != null ? data.temperature.toFixed(1) : '--';
+  document.getElementById('currentTemp').textContent = fmtTemp(data.temperature);
 
   // Sensor status
   const dot = document.getElementById('sensorDot');
@@ -278,7 +294,7 @@ function updateUI(data) {
   }
 
   // Target temperature
-  document.getElementById('targetTemp').textContent = Math.round(data.target_temperature);
+  document.getElementById('targetTemp').textContent = fmtTemp(data.target_temperature, {decimals: 0});
 
   // Auto mode
   document.getElementById('autoToggle').checked = data.auto_mode;
@@ -305,6 +321,7 @@ function updateUI(data) {
 }
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('unitBtn').textContent = useFahrenheit ? '\u00B0C' : '\u00B0F';
   poll();
   setInterval(poll, POLL_INTERVAL);
 
@@ -319,6 +336,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const newTemp = Math.min(40, (state.target_temperature || 28) + 1);
     await api('POST', '/api/thermostat', { target_temperature: newTemp });
     poll();
+  });
+
+  // Unit toggle
+  document.getElementById('unitBtn').addEventListener('click', () => {
+    useFahrenheit = !useFahrenheit;
+    localStorage.setItem('unit', useFahrenheit ? 'F' : 'C');
+    document.getElementById('unitBtn').textContent = useFahrenheit ? '\u00B0C' : '\u00B0F';
+    if (state.target_temperature != null) updateUI(state);
   });
 
   // Auto mode toggle
@@ -342,8 +367,9 @@ document.addEventListener('DOMContentLoaded', () => {
   // Manual temperature
   document.getElementById('manualTempBtn').addEventListener('click', async () => {
     const input = document.getElementById('manualTemp');
-    const val = parseFloat(input.value);
+    let val = parseFloat(input.value);
     if (isNaN(val)) return;
+    if (useFahrenheit) val = fToC(val);
     await api('POST', '/api/temperature/manual', { temperature: val });
     poll();
   });
