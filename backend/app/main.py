@@ -284,8 +284,9 @@ def _fetch_homebridge_setup_uri() -> str | None:
         uri = body.get("setupUri")
         if uri:
             return uri
-    except Exception:
-        pass
+        logger.warning("pairing API returned no setupUri: %s", body)
+    except Exception as e:
+        logger.warning("pairing API (no auth) failed: %s", e)
 
     # Strategy 2: try JWT login with admin/admin
     try:
@@ -297,7 +298,8 @@ def _fetch_homebridge_setup_uri() -> str | None:
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
-            token = json.loads(resp.read()).get("access_token")
+            body = json.loads(resp.read())
+        token = body.get("access_token")
         if token:
             req = urllib.request.Request(
                 f"{base}/api/status/pairing",
@@ -309,8 +311,11 @@ def _fetch_homebridge_setup_uri() -> str | None:
             uri = body.get("setupUri")
             if uri:
                 return uri
-    except Exception:
-        pass
+            logger.warning("pairing API (with auth) returned no setupUri: %s", body)
+        else:
+            logger.warning("login returned no token: %s", body)
+    except Exception as e:
+        logger.warning("pairing API (with auth) failed: %s", e)
 
     return None
 
