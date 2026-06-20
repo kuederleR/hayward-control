@@ -2,9 +2,12 @@
 Description=Hayward HeatPro Bluetooth Provisioning
 After=bluetooth.service network.target
 Requires=bluetooth.service
+Wants=rfkill.service
 
 [Service]
 Type=simple
+ExecStartPre=/usr/sbin/rfkill unblock bluetooth
+ExecStartPre=/bin/sleep 2
 ExecStart=/usr/local/bin/hayward-provisioning-server
 Restart=on-failure
 RestartSec=5

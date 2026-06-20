@@ -150,38 +150,24 @@ def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
 
 # ── Bluetooth RFCOMM server ────────────────────────────────────────────────
 
-def _set_bluetooth_name(name: str):
-    """Set the Bluetooth adapter name."""
-    try:
-        subprocess.run(["hciconfig", "hci0", "name", name],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
-
-
-def _register_spp_service():
-    """Register the SPP service with BlueZ's SDP daemon."""
-    try:
-        subprocess.run(["sdptool", "add", "--channel", str(RFCOMM_CHANNEL), "SP"],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
-
-
-def _make_discoverable():
-    """Make the Bluetooth adapter discoverable."""
-    try:
-        subprocess.run(["hciconfig", "hci0", "piscan"],
-                       capture_output=True, timeout=5)
-    except Exception:
-        pass
+def _bt_init():
+    """Initialize Bluetooth adapter: unblock, power up, set name, make discoverable, register SPP."""
+    for cmd in [
+        ["rfkill", "unblock", "bluetooth"],
+        ["hciconfig", "hci0", "up"],
+        ["hciconfig", "hci0", "name", _bt_advertised_name],
+        ["hciconfig", "hci0", "piscan"],
+        ["sdptool", "add", "--channel", str(RFCOMM_CHANNEL), "SP"],
+    ]:
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except Exception as e:
+            logger.warning("bt_init step failed: %s %s", cmd[0], e)
 
 
 def run_bt_server():
     """Run the Bluetooth RFCOMM server."""
-    _set_bluetooth_name(_bt_advertised_name)
-    _make_discoverable()
-    _register_spp_service()
+    _bt_init()
 
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
                           socket.BTPROTO_RFCOMM)
@@ -305,23 +291,12 @@ def run_unix_server():
 def main():
     import threading
 
-    foreground = "--foreground" in sys.argv
-
     # Start Unix socket server in background
     unix_thread = threading.Thread(target=run_unix_server, daemon=True)
     unix_thread.start()
 
     # Start Bluetooth server (blocking)
-    if foreground:
-        run_bt_server()
-    else:
-        # In daemon mode, fork
-        if os.fork() > 0:
-            sys.exit(0)
-        os.setsid()
-        if os.fork() > 0:
-            sys.exit(0)
-        run_bt_server()
+    run_bt_server()
 
 
 if __name__ == "__main__":
