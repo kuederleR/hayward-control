@@ -24,7 +24,7 @@ class RelayController:
 
         if RPI_AVAILABLE:
             try:
-                GPIO.setup(self._pin, GPIO.OUT, initial=GPIO.LOW)
+                GPIO.setup(self._pin, GPIO.OUT, initial=GPIO.HIGH)
                 logger.info("Relay initialized on GPIO %s", self._pin)
             except Exception as e:
                 logger.error("GPIO setup failed: %s", e)
@@ -36,19 +36,19 @@ class RelayController:
     def on(self):
         self._state = True
         if RPI_AVAILABLE:
-            GPIO.output(self._pin, GPIO.HIGH)
+            GPIO.output(self._pin, GPIO.LOW)
         logger.info("Relay ON")
 
     def off(self):
         self._state = False
         if RPI_AVAILABLE:
-            GPIO.output(self._pin, GPIO.LOW)
+            GPIO.output(self._pin, GPIO.HIGH)
         logger.info("Relay OFF")
 
     def cleanup(self):
         if RPI_AVAILABLE:
             try:
-                GPIO.output(self._pin, GPIO.LOW)
+                GPIO.output(self._pin, GPIO.HIGH)
                 GPIO.cleanup(self._pin)
             except Exception:
                 pass
