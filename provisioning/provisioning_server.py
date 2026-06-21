@@ -231,25 +231,37 @@ def _ap_up():
     _write_hostapd_conf()
     _write_dnsmasq_conf()
 
-    # Configure interface
+    # Free wlan0 from wpa_supplicant and set AP mode
+    subprocess.run(["ip", "link", "set", AP_IFACE, "down"], capture_output=True, timeout=10)
+    subprocess.run(["killall", "-9", "wpa_supplicant"], capture_output=True, timeout=5)
+    subprocess.run(["iw", "dev", AP_IFACE, "set", "type", "ap"], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "add", f"{AP_GW}/24", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
 
+    time.sleep(1)
+
     # Start hostapd
     hostapd_proc = subprocess.Popen(
         ["hostapd", str(HOSTAPD_CONF)],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     # Start dnsmasq
     dnsmasq_proc = subprocess.Popen(
         ["dnsmasq", "-C", str(DNSMASQ_CONF), "--no-daemon"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
     time.sleep(2)
 
+    # Check hostapd is alive
+    if hostapd_proc.poll() is not None:
+        stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
+        logger.error("hostapd failed to start:\n%s", stderr[:500])
+        raise RuntimeError(f"hostapd exited with code {hostapd_proc.returncode}")
+
+    logger.info("AP mode is up")
     return hostapd_proc, dnsmasq_proc
 
 
@@ -265,12 +277,19 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
             except Exception:
                 proc.kill()
 
-    # Kill any lingering instances
-    for pname in ["hostapd", "dnsmasq"]:
-        subprocess.run(["pkill", "-f", f"hayward-{pname}"], capture_output=True, timeout=5)
+    subprocess.run(["killall", "-9", "hostapd", "dnsmasq"], capture_output=True, timeout=5)
 
-    # Restore wlan0
+    # Restore wlan0 to managed mode
+    subprocess.run(["ip", "link", "set", AP_IFACE, "down"], capture_output=True, timeout=10)
+    subprocess.run(["iw", "dev", AP_IFACE, "set", "type", "managed"], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
+    subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
+
+    # Restart networking
+    subprocess.run(["systemctl", "restart", "wpa_supplicant"], capture_output=True, timeout=30)
+    time.sleep(2)
+    subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
+    subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
 
     # Clean up temp files
     for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
@@ -279,10 +298,6 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
         except Exception:
             pass
 
-    # Restart networking
-    subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
-    subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
-
 
 def ap_mode_handler() -> dict:
     """Enter AP mode, block until credentials received or timeout (10 min)."""
@@ -290,7 +305,11 @@ def ap_mode_handler() -> dict:
     _credentials_received = None
     _exit_ap_mode.clear()
 
-    hostapd_proc, dnsmasq_proc = _ap_up()
+    try:
+        hostapd_proc, dnsmasq_proc = _ap_up()
+    except Exception as e:
+        logger.error("Failed to start AP mode: %s", e)
+        return {"ok": False, "message": f"Failed to start AP mode: {e}"}
 
     http_thread = threading.Thread(target=_run_http_server, daemon=True)
     http_thread.start()
