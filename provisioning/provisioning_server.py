@@ -335,10 +335,13 @@ def ap_mode_handler() -> dict:
     _credentials_received = None
     _exit_ap_mode.clear()
 
+    _write_status(ap_mode=True, ssid=None)
+
     try:
         hostapd_proc, dnsmasq_proc = _ap_up()
     except Exception as e:
         logger.error("Failed to start AP mode: %s", e)
+        _write_status(ap_mode=False)
         return {"ok": False, "message": f"Failed to start AP mode: {e}"}
 
     http_thread = threading.Thread(target=_run_http_server, daemon=True)
@@ -354,6 +357,23 @@ def ap_mode_handler() -> dict:
         return {"ok": True, "ssid": _credentials_received[0], "message": "Credentials received and applied"}
 
     return {"ok": False, "message": "Timed out waiting for credentials"}
+
+
+def _write_status(ap_mode: bool = False, ssid: str | None = None):
+    """Update status.json for the Docker backend to read."""
+    if ssid is None:
+        ssid = current_wifi_ssid()
+    try:
+        PROVISIONING_DIR.mkdir(parents=True, exist_ok=True)
+        (PROVISIONING_DIR / "status.json").write_text(json.dumps({
+            "connected": ssid is not None,
+            "ssid": ssid,
+            "ap_mode": ap_mode,
+            "ap_ssid": AP_SSID if ap_mode else None,
+            "timestamp": time.time(),
+        }))
+    except Exception:
+        pass
 
 
 # ── File-based watcher (for Docker backend communication) ────────────────────
@@ -386,17 +406,7 @@ def _file_watcher():
             except Exception as e:
                 logger.error("WiFi request error: %s", e)
 
-        # Update status for backend
-        try:
-            ssid = current_wifi_ssid()
-            PROVISIONING_DIR.mkdir(parents=True, exist_ok=True)
-            (PROVISIONING_DIR / "status.json").write_text(json.dumps({
-                "connected": ssid is not None,
-                "ssid": ssid,
-                "timestamp": time.time(),
-            }))
-        except Exception:
-            pass
+        _write_status()
 
 
 # ── Unix socket handler (normal mode) ────────────────────────────────────────
