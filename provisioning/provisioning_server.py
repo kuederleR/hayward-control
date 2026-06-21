@@ -51,6 +51,7 @@ _credentials_received = None  # (ssid, password) set by HTTP server in AP mode
 _exit_ap_mode = threading.Event()
 _http_server = None  # HTTPServer instance, set by _run_http_server
 _http_server_ready = threading.Event()  # signaled when HTTP server is listening
+_ap_mode_lock = threading.Lock()  # prevents concurrent entry into AP mode
 
 
 def _drain_pipe(pipe, log_path: Path):
@@ -66,6 +67,43 @@ def _drain_pipe(pipe, log_path: Path):
             pipe.close()
         except Exception:
             pass
+
+
+# ── WiFi monitor ─────────────────────────────────────────────────────────────
+
+RECONNECTION_GRACE = 30  # seconds of disconnection before auto AP mode
+
+
+def _wifi_monitor():
+    """Periodically check WiFi connectivity and enter AP mode on sustained loss."""
+    logger.info("WiFi monitor started")
+    lost_at = None
+
+    while True:
+        time.sleep(5)
+
+        # If AP mode is already active, skip and reset the timer
+        if not _ap_mode_lock.acquire(blocking=False):
+            lost_at = None
+            continue
+        _ap_mode_lock.release()
+
+        ssid = current_wifi_ssid()
+        if ssid:
+            lost_at = None
+            continue
+
+        now = time.time()
+        if lost_at is None:
+            lost_at = now
+            logger.info("WiFi lost, will enter AP mode after %ds grace", RECONNECTION_GRACE)
+            continue
+
+        elapsed = now - lost_at
+        if elapsed >= RECONNECTION_GRACE:
+            logger.info("WiFi disconnected for %.0fs, entering AP mode", elapsed)
+            lost_at = None
+            ap_mode_handler()
 
 
 # ── WiFi helpers ─────────────────────────────────────────────────────────────
@@ -446,6 +484,16 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
 
 def ap_mode_handler() -> dict:
     """Enter AP mode, block until credentials received or timeout (10 min)."""
+    if not _ap_mode_lock.acquire(blocking=False):
+        logger.warning("AP mode already active, ignoring duplicate trigger")
+        return {"ok": False, "message": "AP mode already active"}
+    try:
+        return _ap_mode_handler_impl()
+    finally:
+        _ap_mode_lock.release()
+
+
+def _ap_mode_handler_impl() -> dict:
     global _credentials_received, _exit_ap_mode
     _credentials_received = None
     _exit_ap_mode.clear()
@@ -622,6 +670,9 @@ def main():
 
     watcher_thread = threading.Thread(target=_file_watcher, daemon=True)
     watcher_thread.start()
+
+    monitor_thread = threading.Thread(target=_wifi_monitor, daemon=True)
+    monitor_thread.start()
 
     run_unix_server()
 
