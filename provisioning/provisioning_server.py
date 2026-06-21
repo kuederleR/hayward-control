@@ -134,6 +134,33 @@ def _nmcli_available() -> bool:
         return False
 
 
+def _clean_old_nm_profiles(keep_ssid: str | None = None):
+    """Delete all WiFi connection profiles that don't match keep_ssid."""
+    if not _nmcli_available():
+        return
+    try:
+        r = subprocess.run(
+            ["nmcli", "-t", "--fields", "NAME,TYPE,UUID", "connection", "show"],
+            capture_output=True, text=True, timeout=10
+        )
+        if r.returncode != 0:
+            return
+        for line in r.stdout.strip().split("\n"):
+            parts = line.split(":")
+            if len(parts) < 3:
+                continue
+            name, ctype = parts[0], parts[1]
+            if ctype != "802-11-wireless":
+                continue
+            if keep_ssid and name == keep_ssid:
+                continue
+            subprocess.run(["nmcli", "connection", "delete", "uuid", parts[2]],
+                           capture_output=True, timeout=10)
+            logger.info("Deleted old NM WiFi profile: %s", name)
+    except Exception as e:
+        logger.warning("Failed to clean old NM profiles: %s", e)
+
+
 def _nmcli_connect(ssid: str, password: str) -> tuple[bool, str]:
     """Connect to a WiFi network using NetworkManager's nmcli."""
     try:
@@ -444,6 +471,11 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
     subprocess.run(["iw", "dev", AP_IFACE, "set", "type", "managed"], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
+
+    # Delete old NM WiFi profiles before restarting services so NM can't
+    # auto-connect to the old network instead of the newly-provisioned one.
+    if ssid:
+        _clean_old_nm_profiles(keep_ssid=ssid)
 
     # Restart networking — check each service exists first to avoid hangs
     for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
