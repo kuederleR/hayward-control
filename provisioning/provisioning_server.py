@@ -274,6 +274,20 @@ def _ap_up():
         _ap_down(hostapd_proc, dnsmasq_proc)
         raise RuntimeError(f"hostapd exited with code {hostapd_proc.returncode}")
 
+    # Log interface info for diagnostics
+    for cmd in [
+        ["iw", "dev", AP_IFACE, "info"],
+        ["iw", "dev", AP_IFACE, "link"],
+    ]:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+            if r.stdout:
+                logger.info("%s:\n%s", " ".join(cmd), r.stdout.strip())
+            if r.stderr:
+                logger.warning("%s stderr: %s", " ".join(cmd), r.stderr.strip())
+        except Exception as e:
+            logger.warning("diagnostic cmd failed: %s", e)
+
     logger.info("AP mode is up")
     return hostapd_proc, dnsmasq_proc
 
