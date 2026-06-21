@@ -71,7 +71,7 @@ def _drain_pipe(pipe, log_path: Path):
 
 # ── WiFi monitor ─────────────────────────────────────────────────────────────
 
-RECONNECTION_GRACE = 30  # seconds of disconnection before auto AP mode
+RECONNECTION_GRACE = 15  # seconds of disconnection before auto AP mode
 
 
 def _wifi_monitor():
