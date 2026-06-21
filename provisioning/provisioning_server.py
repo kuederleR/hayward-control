@@ -71,7 +71,8 @@ def wpa_path() -> Path | None:
 def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
     """Write new credentials and restart wpa_supplicant."""
     try:
-        wpa_path().parent.mkdir(parents=True, exist_ok=True)
+        target = wpa_path() or WPA_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
         psk_line = f'\tpsk="{password}"\n' if password else "\tkey_mgmt=NONE\n"
         wpa_conf = f"""ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
 update_config=1
@@ -81,7 +82,6 @@ network={{
 \tssid="{ssid}"
 {psk_line}}}
 """
-        target = wpa_path() or WPA_FILE
         target.write_text(wpa_conf)
         subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"], capture_output=True, timeout=10)
         return True, f"WiFi config written to {target}"
