@@ -232,8 +232,10 @@ def _ap_up():
     _write_dnsmasq_conf()
 
     # Free wlan0 from wpa_supplicant and set AP mode
+    subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True, timeout=30)
+    subprocess.run(["rfkill", "unblock", "wifi"], capture_output=True, timeout=5)
+    subprocess.run(["iw", "reg", "set", "US"], capture_output=True, timeout=5)
     subprocess.run(["ip", "link", "set", AP_IFACE, "down"], capture_output=True, timeout=10)
-    subprocess.run(["killall", "-9", "wpa_supplicant"], capture_output=True, timeout=5)
     subprocess.run(["iw", "dev", AP_IFACE, "set", "type", "ap"], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
@@ -269,6 +271,7 @@ def _ap_up():
     if hostapd_proc.poll() is not None:
         stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
         logger.error("hostapd failed to start:\n%s", stderr[:500])
+        _ap_down(hostapd_proc, dnsmasq_proc)
         raise RuntimeError(f"hostapd exited with code {hostapd_proc.returncode}")
 
     logger.info("AP mode is up")
@@ -296,10 +299,13 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
 
     # Restart networking
-    subprocess.run(["systemctl", "restart", "wpa_supplicant"], capture_output=True, timeout=30)
-    time.sleep(2)
+    subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True, timeout=30)
+    time.sleep(3)
     subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
-    subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
+    # Try dhclient, fall back to dhcpcd
+    r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
+    if r.returncode != 0:
+        subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
 
     # Clean up temp files
     for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
