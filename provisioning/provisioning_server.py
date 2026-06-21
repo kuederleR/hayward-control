@@ -40,6 +40,8 @@ HTTP_PORT = 80
 
 HOSTAPD_CONF = Path("/tmp/hayward-hostapd.conf")
 DNSMASQ_CONF = Path("/tmp/hayward-dnsmasq.conf")
+HOSTAPD_LOG = Path("/tmp/hayward-hostapd.log")
+DNSMASQ_LOG = Path("/tmp/hayward-dnsmasq.log")
 
 logger = logging.getLogger("hayward-provisioning")
 
@@ -47,6 +49,23 @@ logger = logging.getLogger("hayward-provisioning")
 
 _credentials_received = None  # (ssid, password) set by HTTP server in AP mode
 _exit_ap_mode = threading.Event()
+_http_server = None  # HTTPServer instance, set by _run_http_server
+_http_server_ready = threading.Event()  # signaled when HTTP server is listening
+
+
+def _drain_pipe(pipe, log_path: Path):
+    """Read lines from a subprocess pipe and append to a log file (daemon thread)."""
+    try:
+        with open(log_path, "a") as f:
+            for line in iter(pipe.readline, b""):
+                f.write(line.decode(errors="replace"))
+    except Exception:
+        pass
+    finally:
+        try:
+            pipe.close()
+        except Exception:
+            pass
 
 
 # ── WiFi helpers ─────────────────────────────────────────────────────────────
@@ -220,10 +239,13 @@ catch(e){{m.textContent='Error: '+e.message;m.className='msg err'}}}});
 
 class CaptivePortalHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        body = CAPTIVE_PAGE.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Connection", "close")
         self.end_headers()
-        self.wfile.write(CAPTIVE_PAGE.encode())
+        self.wfile.write(body)
 
     def do_POST(self):
         length = int(self.headers.get("Content-Length", 0))
@@ -269,12 +291,18 @@ class CaptivePortalHandler(BaseHTTPRequestHandler):
 
 
 def _run_http_server():
-    server = HTTPServer(("0.0.0.0", HTTP_PORT), CaptivePortalHandler)
-    server.timeout = 1.0
-    logger.info("HTTP server listening on %s:%d", AP_GW, HTTP_PORT)
-    while not _exit_ap_mode.is_set():
-        server.handle_request()
-    server.server_close()
+    global _http_server
+    try:
+        server = HTTPServer(("0.0.0.0", HTTP_PORT), CaptivePortalHandler)
+        _http_server = server
+        _http_server_ready.set()
+        logger.info("HTTP server listening on %s:%d", AP_GW, HTTP_PORT)
+        server.serve_forever()
+    except Exception as e:
+        logger.error("HTTP server failed to start: %s", e)
+        _exit_ap_mode.set()
+    finally:
+        _http_server = None
 
 
 def _ap_up():
@@ -304,12 +332,14 @@ def _ap_up():
         ["hostapd", str(HOSTAPD_CONF)],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
+    threading.Thread(target=_drain_pipe, args=(hostapd_proc.stderr, HOSTAPD_LOG), daemon=True).start()
 
     # Start dnsmasq
     dnsmasq_proc = subprocess.Popen(
         ["dnsmasq", "-C", str(DNSMASQ_CONF), "--no-daemon", "--bind-dynamic"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
+    threading.Thread(target=_drain_pipe, args=(dnsmasq_proc.stderr, DNSMASQ_LOG), daemon=True).start()
 
     # Wait for hostapd to be ready and wlan0 to appear
     for _ in range(10):
@@ -407,7 +437,7 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
         logger.warning("WiFi not connected after AP mode teardown")
 
     # Clean up temp files
-    for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
+    for f in [HOSTAPD_CONF, DNSMASQ_CONF, HOSTAPD_LOG, DNSMASQ_LOG]:
         try:
             f.unlink()
         except Exception:
@@ -429,13 +459,29 @@ def ap_mode_handler() -> dict:
         _write_status(ap_mode=False)
         return {"ok": False, "message": f"Failed to start AP mode: {e}"}
 
+    _http_server_ready.clear()
     http_thread = threading.Thread(target=_run_http_server, daemon=True)
     http_thread.start()
+
+    # Wait for the HTTP server to be ready (or fail)
+    if not _http_server_ready.wait(timeout=5):
+        logger.error("HTTP server did not start within 5s")
+        _ap_down(hostapd_proc, dnsmasq_proc)
+        _write_status(ap_mode=False)
+        return {"ok": False, "message": "HTTP server failed to start"}
 
     # Wait for credentials (up to 10 minutes)
     timeout = 600
     signaled = _exit_ap_mode.wait(timeout=timeout)
     logger.info("AP mode wait ended: signaled=%s, timeout=%ds", signaled, timeout)
+
+    # Shutdown HTTP server so the thread can exit
+    if _http_server:
+        try:
+            _http_server.shutdown()
+            _http_server.server_close()
+        except Exception as e:
+            logger.warning("HTTP server shutdown error: %s", e)
 
     ssid, password = _credentials_received or (None, "")
     _ap_down(hostapd_proc, dnsmasq_proc, ssid=ssid, password=password)
