@@ -216,7 +216,7 @@ class CaptivePortalHandler(BaseHTTPRequestHandler):
 
 
 def _run_http_server():
-    server = HTTPServer((AP_GW, HTTP_PORT), CaptivePortalHandler)
+    server = HTTPServer(("0.0.0.0", HTTP_PORT), CaptivePortalHandler)
     server.timeout = 1.0
     logger.info("HTTP server listening on %s:%d", AP_GW, HTTP_PORT)
     while not _exit_ap_mode.is_set():
@@ -236,8 +236,8 @@ def _ap_up():
     subprocess.run(["killall", "-9", "wpa_supplicant"], capture_output=True, timeout=5)
     subprocess.run(["iw", "dev", AP_IFACE, "set", "type", "ap"], capture_output=True, timeout=10)
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
-    subprocess.run(["ip", "addr", "add", f"{AP_GW}/24", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
+    subprocess.run(["ip", "addr", "add", f"{AP_GW}/24", "dev", AP_IFACE], capture_output=True, timeout=10)
 
     time.sleep(1)
 
