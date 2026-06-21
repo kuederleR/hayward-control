@@ -377,14 +377,28 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
     else:
         logger.warning("wpa_supplicant did not connect within 30s, trying dhclient anyway")
 
+    dhcp_ok = False
     try:
         r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
-        if r.returncode != 0:
-            subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
+        dhcp_ok = r.returncode == 0
+    except FileNotFoundError:
+        logger.info("dhclient not found, using dhcpcd")
     except Exception as e:
-        logger.warning("dhclient failed: %s", e)
+        logger.warning("dhclient error: %s", e)
+
+    if not dhcp_ok:
+        try:
+            r = subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
+            dhcp_ok = r.returncode == 0
+        except FileNotFoundError:
+            logger.info("dhcpcd -n not supported either")
+        except Exception as e:
+            logger.warning("dhcpcd renew error: %s", e)
+
     if connected:
         logger.info("Network reconnected successfully")
+    else:
+        logger.warning("WiFi may not be connected after AP mode")
 
     # Clean up temp files
     for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
@@ -420,8 +434,13 @@ def ap_mode_handler() -> dict:
     ssid, password = _credentials_received or (None, "")
     _ap_down(hostapd_proc, dnsmasq_proc, ssid=ssid, password=password)
 
-    if ssid:
-        return {"ok": True, "ssid": ssid, "message": "Credentials received and applied"}
+    # Determine what we connected to
+    actual_ssid = current_wifi_ssid() or ssid
+    _write_status(ap_mode=False, ssid=actual_ssid)
+    logger.info("Post-AP mode SSID: %s (configured: %s)", actual_ssid, ssid)
+
+    if actual_ssid:
+        return {"ok": True, "ssid": actual_ssid, "message": "Credentials received and applied"}
 
     return {"ok": False, "message": "Timed out waiting for credentials"}
 
