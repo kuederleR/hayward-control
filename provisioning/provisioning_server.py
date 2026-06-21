@@ -151,18 +151,23 @@ def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
 # ── Bluetooth RFCOMM server ────────────────────────────────────────────────
 
 def _bt_init():
-    """Initialize Bluetooth adapter: unblock, power up, set name, make discoverable, register SPP."""
-    for cmd in [
-        ["rfkill", "unblock", "bluetooth"],
-        ["hciconfig", "hci0", "up"],
-        ["hciconfig", "hci0", "name", _bt_advertised_name],
-        ["hciconfig", "hci0", "piscan"],
-        ["sdptool", "add", "--channel", str(RFCOMM_CHANNEL), "SP"],
-    ]:
+    """Initialize Bluetooth adapter for iOS-compatible SPP."""
+    steps = [
+        (["rfkill", "unblock", "bluetooth"], False),
+        (["bluetoothctl", "power", "on"], False),
+        (["bluetoothctl", "agent", "NoInputNoOutput"], False),
+        (["bluetoothctl", "default-agent"], False),
+        (["bluetoothctl", "discoverable", "on"], False),
+        (["bluetoothctl", "pairable", "on"], False),
+        (["bluetoothctl", "system-alias", _bt_advertised_name], False),
+        (["sdptool", "add", "--channel", str(RFCOMM_CHANNEL), "SP"], True),
+    ]
+    for cmd, log_fail in steps:
         try:
             subprocess.run(cmd, capture_output=True, timeout=10)
         except Exception as e:
-            logger.warning("bt_init step failed: %s %s", cmd[0], e)
+            if log_fail:
+                logger.warning("bt_init step failed: %s", e)
 
 
 def run_bt_server():
