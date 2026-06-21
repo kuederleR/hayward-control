@@ -152,22 +152,40 @@ def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
 
 def _bt_init():
     """Initialize Bluetooth adapter for iOS-compatible SPP."""
-    steps = [
-        (["rfkill", "unblock", "bluetooth"], False),
-        (["bluetoothctl", "power", "on"], False),
-        (["bluetoothctl", "agent", "NoInputNoOutput"], False),
-        (["bluetoothctl", "default-agent"], False),
-        (["bluetoothctl", "discoverable", "on"], False),
-        (["bluetoothctl", "pairable", "on"], False),
-        (["bluetoothctl", "system-alias", _bt_advertised_name], False),
-        (["sdptool", "add", "--channel", str(RFCOMM_CHANNEL), "SP"], True),
-    ]
-    for cmd, log_fail in steps:
+    try:
+        subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=10)
+    except Exception:
+        pass
+
+    # bluetoothctl is interactive — pipe all commands in one shot
+    btctl_cmds = (
+        "power on\n"
+        "agent NoInputNoOutput\n"
+        "default-agent\n"
+        "discoverable on\n"
+        "pairable on\n"
+        f"system-alias {_bt_advertised_name}\n"
+        "quit\n"
+    )
+    try:
+        subprocess.run(["bluetoothctl"], input=btctl_cmds, capture_output=True,
+                       text=True, timeout=15)
+    except Exception as e:
+        logger.warning("bluetoothctl init failed: %s", e)
+
+    # Register SPP SDP record so serial terminal apps can discover it
+    for attempt in range(3):
         try:
-            subprocess.run(cmd, capture_output=True, timeout=10)
+            r = subprocess.run(
+                ["sdptool", "add", f"--channel={RFCOMM_CHANNEL}", "SP"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if r.returncode == 0:
+                break
+            logger.warning("sdptool attempt %d failed: %s", attempt + 1, r.stderr.strip())
         except Exception as e:
-            if log_fail:
-                logger.warning("bt_init step failed: %s", e)
+            logger.warning("sdptool attempt %d error: %s", attempt + 1, e)
+        time.sleep(1)
 
 
 def run_bt_server():
