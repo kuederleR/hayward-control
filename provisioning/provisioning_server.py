@@ -168,10 +168,9 @@ def _bt_init():
     """Initialize Bluetooth adapter for iOS-compatible SPP."""
     global _bt_agent_process
 
-    try:
-        subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=10)
-    except Exception:
-        pass
+    # Load kernel module and power on Bluetooth adapter
+    subprocess.run(["modprobe", "rfcomm"], capture_output=True, timeout=5)
+    subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=10)
 
     # Set HCI-level page/inquiry scan (hciconfig) + BlueZ-level config (bluetoothctl)
     for cmd in [
@@ -260,22 +259,21 @@ def _bt_periodic_refresh():
 
 
 def _bt_addr():
-    """Get local Bluetooth adapter MAC address."""
+    """Get local Bluetooth adapter MAC as 6-byte binary (or BDADDR_ANY)."""
     try:
-        addr = Path("/sys/class/bluetooth/hci0/address").read_text().strip()
-        if addr:
-            return addr
+        addr_str = Path("/sys/class/bluetooth/hci0/address").read_text().strip()
+        if addr_str:
+            return bytes.fromhex(addr_str.replace(":", ""))
     except Exception:
         pass
     try:
-        r = subprocess.run(["hciconfig", "hci0"], capture_output=True,
-                           text=True, timeout=5)
+        r = subprocess.run(["hciconfig", "hci0"], capture_output=True, text=True, timeout=5)
         for line in r.stdout.splitlines():
             if "BD Address" in line:
-                return line.split()[-1]
+                return bytes.fromhex(line.split()[-1].replace(":", ""))
     except Exception:
         pass
-    return ""
+    return b"\x00\x00\x00\x00\x00\x00"  # BDADDR_ANY
 
 
 def run_bt_server():
@@ -283,14 +281,27 @@ def run_bt_server():
     _bt_init()
 
     addr = _bt_addr()
-    if not addr:
-        logger.error("No Bluetooth adapter found")
-        return
 
-    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
-                          socket.BTPROTO_RFCOMM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind((addr, RFCOMM_CHANNEL))
+    # Retry loop: rfcomm module or bluetoothd might not be ready
+    sock = None
+    for attempt in range(10):
+        try:
+            sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
+                                  socket.BTPROTO_RFCOMM)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind((addr, RFCOMM_CHANNEL))
+            break
+        except OSError as e:
+            logger.warning("bind attempt %d failed: %s", attempt + 1, e)
+            if sock is not None:
+                sock.close()
+                sock = None
+            if attempt == 0:
+                subprocess.run(["modprobe", "rfcomm"], capture_output=True, timeout=5)
+            time.sleep(2)
+    if sock is None:
+        logger.error("Could not bind RFCOMM socket after 10 attempts")
+        return
     sock.listen(1)
     sock.settimeout(30.0)
 

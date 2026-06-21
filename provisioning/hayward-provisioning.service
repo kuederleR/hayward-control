@@ -6,8 +6,9 @@ Wants=rfkill.service
 
 [Service]
 Type=simple
+ExecStartPre=/usr/sbin/modprobe rfcomm
 ExecStartPre=/usr/sbin/rfkill unblock bluetooth
-ExecStartPre=/bin/sleep 2
+ExecStartPre=/bin/sleep 3
 ExecStart=/usr/local/bin/hayward-provisioning-server
 Restart=on-failure
 RestartSec=5
