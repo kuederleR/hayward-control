@@ -259,21 +259,19 @@ def _bt_periodic_refresh():
 
 
 def _bt_addr():
-    """Get local Bluetooth adapter MAC as 6-byte binary (or BDADDR_ANY)."""
+    """Get local Bluetooth adapter MAC as colon-separated string."""
     try:
-        addr_str = Path("/sys/class/bluetooth/hci0/address").read_text().strip()
-        if addr_str:
-            return bytes.fromhex(addr_str.replace(":", ""))
+        return Path("/sys/class/bluetooth/hci0/address").read_text().strip()
     except Exception:
         pass
     try:
         r = subprocess.run(["hciconfig", "hci0"], capture_output=True, text=True, timeout=5)
         for line in r.stdout.splitlines():
             if "BD Address" in line:
-                return bytes.fromhex(line.split()[-1].replace(":", ""))
+                return line.split()[-1]
     except Exception:
         pass
-    return b"\x00\x00\x00\x00\x00\x00"  # BDADDR_ANY
+    return ""  # BDADDR_ANY
 
 
 def run_bt_server():
