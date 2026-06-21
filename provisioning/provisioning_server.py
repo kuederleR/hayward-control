@@ -150,18 +150,41 @@ def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
 
 # ── Bluetooth RFCOMM server ────────────────────────────────────────────────
 
+_bt_agent_process = None
+
+
+def _bt_agent_cleanup():
+    global _bt_agent_process
+    if _bt_agent_process is not None:
+        _bt_agent_process.terminate()
+        try:
+            _bt_agent_process.wait(timeout=3)
+        except Exception:
+            _bt_agent_process.kill()
+        _bt_agent_process = None
+
+
 def _bt_init():
     """Initialize Bluetooth adapter for iOS-compatible SPP."""
+    global _bt_agent_process
+
     try:
         subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=10)
     except Exception:
         pass
 
+    # Set HCI-level page/inquiry scan (hciconfig) + BlueZ-level config (bluetoothctl)
+    for cmd in [
+        ["hciconfig", "hci0", "piscan"],
+    ]:
+        try:
+            subprocess.run(cmd, capture_output=True, timeout=10)
+        except Exception:
+            pass
+
     # bluetoothctl is interactive — pipe all commands in one shot
     btctl_cmds = (
         "power on\n"
-        "agent NoInputNoOutput\n"
-        "default-agent\n"
         "discoverable on\n"
         "pairable on\n"
         f"system-alias {_bt_advertised_name}\n"
@@ -173,7 +196,25 @@ def _bt_init():
     except Exception as e:
         logger.warning("bluetoothctl init failed: %s", e)
 
+    # Start bt-agent as persistent pairing handler (keeps agent registered on D-Bus)
+    if _bt_agent_process is None or _bt_agent_process.poll() is not None:
+        try:
+            _bt_agent_process = subprocess.Popen(
+                ["bt-agent", "-c", "NoInputNoOutput"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            logger.info("bt-agent started (pid %d)", _bt_agent_process.pid)
+        except FileNotFoundError:
+            logger.warning("bt-agent not found (install bluez-tools)")
+        except Exception as e:
+            logger.warning("bt-agent failed to start: %s", e)
+
     # Register SPP SDP record so serial terminal apps can discover it
+    _register_spp_sdp()
+
+
+def _register_spp_sdp():
+    """Register SPP SDP record so serial terminal apps discover the device."""
     for attempt in range(3):
         try:
             r = subprocess.run(
@@ -182,10 +223,40 @@ def _bt_init():
             )
             if r.returncode == 0:
                 break
-            logger.warning("sdptool attempt %d failed: %s", attempt + 1, r.stderr.strip())
+            logger.warning("sdptool attempt %d: %s", attempt + 1, r.stderr.strip() or r.stdout.strip())
         except Exception as e:
             logger.warning("sdptool attempt %d error: %s", attempt + 1, e)
         time.sleep(1)
+
+    try:
+        r = subprocess.run(["sdptool", "browse", "local"], capture_output=True,
+                           text=True, timeout=10)
+        if r.returncode == 0:
+            if "Serial Port" in r.stdout:
+                logger.info("SPP SDP record verified")
+            else:
+                logger.warning("SPP record NOT found in SDP browse:\n%s",
+                               r.stdout[:500])
+    except Exception as e:
+        logger.warning("SDP browse failed: %s", e)
+
+
+def _bt_periodic_refresh():
+    """Refresh discoverable/pairable state and SDP record every 30 seconds."""
+    while True:
+        time.sleep(30)
+        try:
+            subprocess.run(["hciconfig", "hci0", "piscan"],
+                           capture_output=True, timeout=10)
+        except Exception:
+            pass
+        for cmd in ("discoverable on\n", "pairable on\n"):
+            try:
+                subprocess.run(["bluetoothctl"], input=cmd,
+                               capture_output=True, text=True, timeout=10)
+            except Exception:
+                pass
+        _register_spp_sdp()
 
 
 def run_bt_server():
@@ -312,11 +383,18 @@ def run_unix_server():
 # ── entry point ────────────────────────────────────────────────────────────
 
 def main():
+    import atexit
     import threading
+
+    atexit.register(_bt_agent_cleanup)
 
     # Start Unix socket server in background
     unix_thread = threading.Thread(target=run_unix_server, daemon=True)
     unix_thread.start()
+
+    # Periodic Bluetooth state refresher
+    refresh_thread = threading.Thread(target=_bt_periodic_refresh, daemon=True)
+    refresh_thread.start()
 
     # Start Bluetooth server (blocking)
     run_bt_server()
