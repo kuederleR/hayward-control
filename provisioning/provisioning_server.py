@@ -231,8 +231,9 @@ def _ap_up():
     _write_hostapd_conf()
     _write_dnsmasq_conf()
 
-    # Free wlan0 from wpa_supplicant and set AP mode
-    subprocess.run(["systemctl", "stop", "wpa_supplicant"], capture_output=True, timeout=30)
+    # Free wlan0 from all network management and set AP mode
+    for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
+        subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=30)
     subprocess.run(["rfkill", "unblock", "wifi"], capture_output=True, timeout=5)
     subprocess.run(["iw", "reg", "set", "US"], capture_output=True, timeout=5)
     subprocess.run(["ip", "link", "set", AP_IFACE, "down"], capture_output=True, timeout=10)
@@ -313,7 +314,8 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
 
     # Restart networking
-    subprocess.run(["systemctl", "start", "wpa_supplicant"], capture_output=True, timeout=30)
+    for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
+        subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
     time.sleep(3)
     subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
     # Try dhclient, fall back to dhcpcd
