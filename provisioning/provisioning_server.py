@@ -249,13 +249,23 @@ def _ap_up():
 
     # Start dnsmasq
     dnsmasq_proc = subprocess.Popen(
-        ["dnsmasq", "-C", str(DNSMASQ_CONF), "--no-daemon"],
+        ["dnsmasq", "-C", str(DNSMASQ_CONF), "--no-daemon", "--bind-dynamic"],
         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
     )
 
-    time.sleep(2)
+    # Wait for hostapd to be ready and wlan0 to appear
+    for _ in range(10):
+        if hostapd_proc.poll() is not None:
+            break
+        r = subprocess.run(["ip", "link", "show", AP_IFACE], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and "UP" in r.stdout and "LOWER_UP" in r.stdout:
+            break
+        time.sleep(1)
+    else:
+        stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
+        logger.error("hostapd did not bring up wlan0:\n%s", stderr[:500])
+        raise RuntimeError("hostapd failed to bring up wlan0")
 
-    # Check hostapd is alive
     if hostapd_proc.poll() is not None:
         stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
         logger.error("hostapd failed to start:\n%s", stderr[:500])
