@@ -2,7 +2,9 @@
 set -euo pipefail
 
 REPO_URL="https://github.com/kuederleR/hayward-control.git"
-INSTALL_DIR="/home/pi/hayward-control"
+USER="${SUDO_USER:-$USER}"
+HOME_DIR=$(eval echo "~$USER")
+INSTALL_DIR="$HOME_DIR/hayward-control"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -52,10 +54,8 @@ else
   ok "Docker installed and enabled on boot"
 fi
 
-# Make sure pi user is in docker group
-if id pi &>/dev/null; then
-  usermod -aG docker pi
-fi
+# Make sure user is in docker group
+usermod -aG docker "$USER" 2>/dev/null || true
 
 info "Checking Docker Compose"
 if ! docker compose version &>/dev/null; then

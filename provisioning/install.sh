@@ -9,8 +9,8 @@ echo "==> Installing Hayward HeatPro Bluetooth provisioning service"
 echo "  → Installing Bluetooth packages"
 sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
   bluez bluez-tools rfkill
-echo "  → Ensuring pi user is in bluetooth group"
-sudo usermod -aG bluetooth pi
+echo "  → Ensuring user is in bluetooth group"
+sudo usermod -aG bluetooth "${SUDO_USER:-$USER}" 2>/dev/null || true
 
 # 1. Copy the provisioning server
 echo "  → Installing /usr/local/bin/hayward-provisioning-server"
