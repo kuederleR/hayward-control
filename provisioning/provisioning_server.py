@@ -318,10 +318,25 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
         subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
     time.sleep(3)
     subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
-    # Try dhclient, fall back to dhcpcd
+
+    # Wait for wpa_supplicant to connect to the new network
+    connected = False
+    for _ in range(30):
+        r = subprocess.run(["iw", "dev", AP_IFACE, "link"], capture_output=True, text=True, timeout=5)
+        if "Not connected" not in r.stdout and r.stdout.strip():
+            connected = True
+            break
+        time.sleep(1)
+    if connected:
+        logger.info("wpa_supplicant connected to new network, requesting IP")
+    else:
+        logger.warning("wpa_supplicant did not connect within 30s, trying dhclient anyway")
+
     r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
     if r.returncode != 0:
         subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
+    if connected:
+        logger.info("Network reconnected successfully")
 
     # Clean up temp files
     for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
