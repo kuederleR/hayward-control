@@ -379,24 +379,33 @@ def _ap_up():
     )
     threading.Thread(target=_drain_pipe, args=(dnsmasq_proc.stderr, DNSMASQ_LOG), daemon=True).start()
 
-    # Wait for hostapd to be ready and wlan0 to appear
-    for _ in range(10):
+    # Check hostapd didn't exit immediately
+    time.sleep(0.5)
+    if hostapd_proc.poll() is not None:
+        logger.error("hostapd exited immediately with code %d", hostapd_proc.returncode)
+        _ap_down(hostapd_proc, dnsmasq_proc)
+        raise RuntimeError(f"hostapd exited with code {hostapd_proc.returncode}")
+
+    # Check dnsmasq didn't exit immediately
+    if dnsmasq_proc.poll() is not None:
+        logger.error("dnsmasq exited immediately with code %d", dnsmasq_proc.returncode)
+        _ap_down(hostapd_proc, dnsmasq_proc)
+        raise RuntimeError(f"dnsmasq exited with code {dnsmasq_proc.returncode}")
+
+    # Wait for wlan0 to come up with the AP
+    for _ in range(20):
         if hostapd_proc.poll() is not None:
-            break
+            logger.error("hostapd died during startup (code %d)", hostapd_proc.returncode)
+            _ap_down(hostapd_proc, dnsmasq_proc)
+            raise RuntimeError(f"hostapd died (code {hostapd_proc.returncode})")
         r = subprocess.run(["ip", "link", "show", AP_IFACE], capture_output=True, text=True, timeout=5)
         if r.returncode == 0 and "UP" in r.stdout and "LOWER_UP" in r.stdout:
             break
         time.sleep(1)
     else:
-        stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
-        logger.error("hostapd did not bring up wlan0:\n%s", stderr[:500])
-        raise RuntimeError("hostapd failed to bring up wlan0")
-
-    if hostapd_proc.poll() is not None:
-        stderr = hostapd_proc.stderr.read().decode() if hostapd_proc.stderr else ""
-        logger.error("hostapd failed to start:\n%s", stderr[:500])
+        logger.error("wlan0 did not become UP+LOWER_UP within 20s after hostapd start")
         _ap_down(hostapd_proc, dnsmasq_proc)
-        raise RuntimeError(f"hostapd exited with code {hostapd_proc.returncode}")
+        raise RuntimeError("wlan0 failed to become ready for AP mode")
 
     # Log interface info for diagnostics
     for cmd in [
