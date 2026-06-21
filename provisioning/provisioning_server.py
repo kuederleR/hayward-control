@@ -349,7 +349,8 @@ def ap_mode_handler() -> dict:
 
     # Wait for credentials (up to 10 minutes)
     timeout = 600
-    _exit_ap_mode.wait(timeout=timeout)
+    signaled = _exit_ap_mode.wait(timeout=timeout)
+    logger.info("AP mode wait ended: signaled=%s, timeout=%ds", signaled, timeout)
 
     _ap_down(hostapd_proc, dnsmasq_proc)
 
