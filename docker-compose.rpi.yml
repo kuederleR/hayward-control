@@ -6,7 +6,4 @@ services:
     volumes:
       - /sys/bus/w1:/sys/bus/w1:ro
       - /sys/devices/w1_bus_master1:/sys/devices/w1_bus_master1:ro
-      - provisioning_data:/data/provisioning
-
-volumes:
-  provisioning_data:
+      - /data/provisioning:/data/provisioning

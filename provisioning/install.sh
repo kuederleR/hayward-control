@@ -12,10 +12,10 @@ sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
 sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
 sudo systemctl disable hostapd dnsmasq 2>/dev/null || true
 
-# 1. Create socket directory
-echo "  → Creating /var/run/hayward"
-sudo mkdir -p /var/run/hayward
-sudo chmod 755 /var/run/hayward
+# 1. Create shared directories
+echo "  → Creating /var/run/hayward and /data/provisioning"
+sudo mkdir -p /var/run/hayward /data/provisioning
+sudo chmod 755 /var/run/hayward /data/provisioning
 
 # 2. Copy the provisioning server
 echo "  → Installing /usr/local/bin/hayward-provisioning-server"
