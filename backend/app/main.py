@@ -188,41 +188,17 @@ HOMEBRIDGE_CONFIG = {
 # ── provisioning ───────────────────────────────────────────────────────────
 
 PROVISIONING_DIR = Path(os.getenv("PROVISIONING_DIR", "/data/provisioning"))
-PROVISIONING_SOCKET = Path("/tmp/hayward-provisioning.sock")
 
 
-def _provisioning_via_socket(ssid: str, password: str) -> dict:
-    """Send WiFi credentials to the host provisioning service via Unix socket."""
+def _read_provisioning_status() -> dict | None:
+    """Read status from the daemon's status.json file."""
     try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect(str(PROVISIONING_SOCKET))
-        sock.send(json.dumps({
-            "action": "set_wifi", "ssid": ssid, "password": password,
-        }).encode())
-        resp = sock.recv(4096)
-        return json.loads(resp.decode())
-    except Exception as e:
-        return {"ok": False, "message": str(e)}
-    finally:
-        sock.close()
-
-
-def _provisioning_status_via_socket() -> dict | None:
-    try:
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(5)
-        sock.connect(str(PROVISIONING_SOCKET))
-        sock.send(json.dumps({"action": "status"}).encode())
-        resp = sock.recv(4096)
-        return json.loads(resp.decode())
+        f = PROVISIONING_DIR / "status.json"
+        if f.exists():
+            return json.loads(f.read_text())
     except Exception:
-        return None
-    finally:
-        try:
-            sock.close()
-        except Exception:
-            pass
+        pass
+    return None
 
 
 def _host_wifi_status() -> dict:
@@ -238,33 +214,29 @@ def _host_wifi_status() -> dict:
     return {"ssid": ssid, "connected": ssid is not None}
 
 
-def _provisioning_save_file(ssid: str, password: str) -> dict:
-    """Fallback: save credentials to a file for the host service to pick up."""
+def _write_trigger_file(name: str, data: dict) -> dict:
+    """Write a trigger file for the host provisioning daemon."""
     try:
         PROVISIONING_DIR.mkdir(parents=True, exist_ok=True)
-        (PROVISIONING_DIR / "wifi_request.json").write_text(json.dumps({
-            "ssid": ssid, "password": password,
-        }))
-        return {"ok": True, "message": "Credentials saved to provisioning directory"}
-    except PermissionError:
-        return {"ok": False, "message": "Cannot write provisioning directory — install the host provisioning service (see README)"}
-    except OSError:
-        return {"ok": False, "message": "Provisioning directory not available — install the host provisioning service (see README)"}
+        (PROVISIONING_DIR / name).write_text(json.dumps(data))
+        return {"ok": True, "message": f"Trigger '{name}' written"}
     except Exception as e:
         return {"ok": False, "message": str(e)}
 
 
 @app.get("/api/provisioning/status")
 def get_provisioning_status():
-    result = _provisioning_status_via_socket()
+    result = _read_provisioning_status()
     if result is None:
         result = _host_wifi_status()
-        result["advertising"] = None
-        result["note"] = "Provisioning service not running — WiFi status from host"
-    result.setdefault("request_dir", str(PROVISIONING_DIR))
-    result.setdefault("request_dir_writable",
-                      os.access(str(PROVISIONING_DIR), os.W_OK) if PROVISIONING_DIR.exists() else False)
+    result.setdefault("ap_ssid", "Hayward-HeatPro-Setup")
     return result
+
+
+@app.post("/api/provisioning/trigger")
+def trigger_ap_mode():
+    """Trigger AP mode on the host provisioning daemon."""
+    return _write_trigger_file("trigger_ap.json", {"triggered": True})
 
 
 @app.post("/api/provisioning/wifi")
@@ -273,15 +245,7 @@ def set_provisioning_wifi(data: dict):
     password = data.get("password", "").strip()
     if not ssid:
         return {"ok": False, "message": "SSID is required"}
-
-    # Try Unix socket first (provisioning service running on host)
-    result = _provisioning_via_socket(ssid, password)
-    if result.get("ok"):
-        return result
-
-    # Fallback: save to file for host-side service
-    result = _provisioning_save_file(ssid, password)
-    return result
+    return _write_trigger_file("wifi_request.json", {"ssid": ssid, "password": password})
 
 
 def _generate_qr_svg(data: str) -> str:

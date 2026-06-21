@@ -66,7 +66,7 @@ ok "$(docker compose version)"
 # ── System packages ─────────────────────────────────────────────────
 info "Installing system dependencies"
 apt-get update && apt-get install -y --no-install-recommends \
-  wireless-tools bluetooth bluez pi-bluetooth python3-pip
+  wireless-tools python3-pip
 ok "System dependencies installed"
 
 # ── Clone / update repo ──────────────────────────────────────────────
@@ -97,20 +97,21 @@ docker compose -f docker-compose.yml -f docker-compose.rpi.yml up -d
 docker compose -f docker-compose.yml -f docker-compose.rpi.yml restart
 ok "Containers are running"
 
-# ── Bluetooth provisioning (optional) ───────────────────────────────
+# ── Provisioning service (optional) ────────────────────────────────
 if [ -f provisioning/install.sh ]; then
   echo ""
   echo -e "${YELLOW}------------------------------------------------------------${NC}"
-  echo -e "${YELLOW}Bluetooth provisioning lets you change WiFi from your phone${NC}"
-  echo -e "${YELLOW}when you cannot reach the Pi over the network.${NC}"
+  echo -e "${YELLOW}WiFi AP provisioning lets you change WiFi from your phone${NC}"
+  echo -e "${YELLOW}when you cannot reach the Pi over the network (creates${NC}"
+  echo -e "${YELLOW}a temporary setup hotspot).${NC}"
   echo -e "${YELLOW}Install it now?${NC}"
   echo -e "${YELLOW}------------------------------------------------------------${NC}"
-  echo -n "Install Bluetooth provisioning? [y/N] "
+  echo -n "Install WiFi AP provisioning? [y/N] "
   read -r ans
   if [[ "$ans" =~ ^[yY] ]]; then
-    info "Installing Bluetooth provisioning service"
+    info "Installing WiFi AP provisioning service"
     (cd provisioning && bash install.sh)
-    ok "Bluetooth provisioning installed"
+    ok "WiFi AP provisioning installed"
   fi
 fi
 

@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     volumes:
       - homebridge_data:/homebridge:ro
+      - /var/run/hayward:/var/run/hayward
 
   homebridge:
     build:

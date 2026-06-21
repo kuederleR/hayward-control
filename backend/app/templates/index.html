@@ -188,26 +188,17 @@ body{min-height:100dvh;display:flex;flex-direction:column}
         <span class="provisioning-label">WiFi</span>
         <span class="provisioning-value" id="wifiSsid">Loading…</span>
       </div>
-      <div class="provisioning-row">
-        <span class="provisioning-label">Bluetooth</span>
-        <span class="provisioning-value" id="btName">Hayward-HeatPro</span>
-      </div>
       <details class="provisioning-details">
         <summary>Change WiFi network</summary>
         <div class="provisioning-form">
-          <div class="manual-temp-row">
-            <input type="text" id="wifiSsidInput" placeholder="New WiFi SSID" autocomplete="off">
-          </div>
-          <div class="manual-temp-row">
-            <input type="password" id="wifiPassInput" placeholder="Password">
-            <button class="btn" id="wifiApplyBtn">Apply</button>
-          </div>
-          <div id="wifiResult" class="provisioning-result"></div>
           <p class="provisioning-note">
-            <strong>No WiFi?</strong> Pair with <strong>Hayward-HeatPro</strong> via
-            Bluetooth from your phone, connect with a serial terminal app, and send:
-            <code>{"ssid":"...","password":"..."}</code>
+            Click the button below to enter <strong>setup mode</strong>.
+            The device will create its own WiFi network
+            <strong>Hayward-HeatPro-Setup</strong>.
+            Connect to it from your phone, then follow the instructions.
           </p>
+          <button class="btn" id="triggerApBtn">Enter Setup Mode</button>
+          <div id="wifiResult" class="provisioning-result"></div>
         </div>
       </details>
     </div>
@@ -383,39 +374,37 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const data = await api('GET', '/api/provisioning/status');
       document.getElementById('wifiSsid').textContent = data.ssid || 'Not connected';
-      document.getElementById('btName').textContent = data.advertising || 'Hayward-HeatPro';
-    } catch (e) {
-      // Provisioning service may not be installed — that's fine
-    }
+    } catch (e) {}
   }
 
-  document.getElementById('wifiApplyBtn').addEventListener('click', async () => {
-    const ssid = document.getElementById('wifiSsidInput').value.trim();
-    const password = document.getElementById('wifiPassInput').value;
+  document.getElementById('triggerApBtn').addEventListener('click', async () => {
+    const btn = document.getElementById('triggerApBtn');
     const result = document.getElementById('wifiResult');
-    if (!ssid) {
-      result.textContent = 'Enter an SSID';
-      result.className = 'provisioning-result err';
-      return;
-    }
-    result.textContent = 'Applying…';
+    btn.disabled = true;
+    result.textContent = 'Entering setup mode…';
     result.className = 'provisioning-result';
     try {
-      const resp = await api('POST', '/api/provisioning/wifi', { ssid, password });
+      const resp = await api('POST', '/api/provisioning/trigger');
       if (resp.ok) {
-        result.textContent = resp.message || 'WiFi config saved. Device will reconnect shortly.';
+        result.innerHTML = 'Device is now in setup mode.' +
+          '<br><br><strong>1.</strong> Open your phone\'s WiFi settings' +
+          '<br><strong>2.</strong> Connect to <strong>Hayward-HeatPro-Setup</strong>' +
+          '<br><strong>3.</strong> Open http://192.168.4.1 in your browser' +
+          '<br><strong>4.</strong> Enter your WiFi credentials and submit';
         result.className = 'provisioning-result ok';
       } else {
-        result.textContent = resp.message || 'Failed to apply config';
+        result.textContent = resp.message || 'Failed to enter setup mode';
         result.className = 'provisioning-result err';
+        btn.disabled = false;
       }
     } catch (e) {
       result.textContent = 'Error: ' + e.message;
       result.className = 'provisioning-result err';
+      btn.disabled = false;
     }
   });
 
-  // Fetch provisioning status on page load (separate from main poll)
+  // Fetch provisioning status on page load
   updateProvisioning();
 
   // HomeKit modal

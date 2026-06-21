@@ -1,397 +1,396 @@
 #!/usr/bin/env python3
 """
-Bluetooth provisioning server for Hayward HeatPro.
+WiFi AP provisioning daemon for Hayward HeatPro.
 
-Listens for WiFi credentials over Bluetooth RFCOMM (Serial Port Profile).
-Connecting from a phone:
-  1. Pair with "Hayward-HeatPro" via Bluetooth settings
-  2. Use a serial terminal app (e.g. "Serial Bluetooth Terminal" on Android,
-     "Bluetooth Serial" on iOS) to connect
-  3. Send: {"ssid":"MyNetwork","password":"secret"}
-  4. The Pi saves the credentials, reconnects WiFi, and responds with OK/ERR
+When WiFi is unavailable or the user triggers a network change from the web UI:
+  1. This daemon sets up an access point "Hayward-HeatPro-Setup"
+  2. Runs hostapd + dnsmasq (DHCP + DNS redirect for captive portal)
+  3. Serves a form on port 80 for entering new WiFi credentials
+  4. Saves credentials to wpa_supplicant and restores client mode
 
-Also provides a Unix socket for the Docker backend to query status and
-trigger provisioning locally.
-
-Run directly:  sudo python3 provisioning_server.py [--foreground]
-Install as service: see install.sh
+Normal mode: listens on a Unix socket for status queries and wifi-set commands.
+AP mode: spawned as a subprocess when triggered; returns to normal mode after
+the user submits credentials or after a timeout.
 """
 
 import json
 import logging
 import os
+import random
 import socket
-import struct
 import subprocess
-import sys
+import threading
 import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
+from urllib.parse import unquote_plus
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
-)
-logger = logging.getLogger("provisioning")
+CONFIG_DIR = Path("/etc/hayward-control")
+PROVISIONING_DIR = Path("/data/provisioning")
+WPA_FILE = Path("/etc/wpa_supplicant/wpa_supplicant.conf")
+WPA_FILE_ALT = Path("/etc/wpa_supplicant/wpa_supplicant-wlan0.conf")
 
-# ── paths ──────────────────────────────────────────────────────────────────
-WPA_CONF = Path("/etc/wpa_supplicant/wpa_supplicant.conf")
-WPA_CONF_BACKUP = Path("/etc/wpa_supplicant/wpa_supplicant.conf.bak")
-NETWORK_RESTART_CMD = ["wpa_cli", "-i", "wlan0", "reconfigure"]
-ALT_RESTART_CMD = ["systemctl", "restart", "networking"]
+UNIX_SOCKET_PATH = Path("/var/run/hayward/provisioning.sock")
+AP_IFACE = "wlan0"
+AP_SSID = "Hayward-HeatPro-Setup"
+AP_GW = "192.168.4.1"
+AP_NETMASK = "255.255.255.0"
+AP_DHCP_RANGE = "192.168.4.2,192.168.4.100,255.255.255.0,24h"
+HTTP_PORT = 80
 
-RFCOMM_CHANNEL = 1
-UNIX_SOCKET_PATH = Path("/tmp/hayward-provisioning.sock")
+HOSTAPD_CONF = Path("/tmp/hayward-hostapd.conf")
+DNSMASQ_CONF = Path("/tmp/hayward-dnsmasq.conf")
 
-# State
-_current_wifi: dict | None = None
-_bt_advertised_name: str = "Hayward-HeatPro"
+logger = logging.getLogger("hayward-provisioning")
 
+# ── State ────────────────────────────────────────────────────────────────────
 
-# ── helpers ────────────────────────────────────────────────────────────────
-
-def _wpa_escape(s: str) -> str:
-    """Escape a string for wpa_supplicant.conf."""
-    return s.replace('\\', '\\\\').replace('"', '\\"')
+_credentials_received = None  # (ssid, password) set by HTTP server in AP mode
+_exit_ap_mode = threading.Event()
 
 
-def _read_wpa_conf() -> str:
-    if WPA_CONF.exists():
-        return WPA_CONF.read_text()
-    return ""
-
-
-def _write_wpa_conf(content: str):
-    if WPA_CONF.exists():
-        WPA_CONF.rename(WPA_CONF_BACKUP)
-    WPA_CONF.write_text(content)
-
-
-def _restart_networking() -> bool:
-    try:
-        r = subprocess.run(NETWORK_RESTART_CMD, capture_output=True, text=True, timeout=10)
-        if r.returncode == 0:
-            return True
-    except Exception:
-        pass
-    try:
-        r = subprocess.run(ALT_RESTART_CMD, capture_output=True, text=True, timeout=30)
-        return r.returncode == 0
-    except Exception as e:
-        logger.error("Failed to restart networking: %s", e)
-        return False
-
-
-# ── WiFi management ────────────────────────────────────────────────────────
+# ── WiFi helpers ─────────────────────────────────────────────────────────────
 
 def current_wifi_ssid() -> str | None:
-    """Return the SSID of the currently connected WiFi network, or None."""
     try:
         r = subprocess.run(["iwgetid", "-r"], capture_output=True, text=True, timeout=5)
-        return r.stdout.strip() or None
+        if r.returncode == 0 and r.stdout.strip():
+            return r.stdout.strip()
     except Exception:
-        return None
+        pass
+    return None
+
+
+def wpa_path() -> Path | None:
+    for p in [WPA_FILE, WPA_FILE_ALT]:
+        if p.exists():
+            return p
+    return None
 
 
 def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
-    """Add or update a network block in wpa_supplicant.conf and reconnect."""
-    if not ssid:
-        return False, "SSID is required"
-
-    escaped_ssid = _wpa_escape(ssid)
-    escaped_pass = _wpa_escape(password)
-
-    # Build the new network block
-    new_block = f'network={{\n\tssid="{escaped_ssid}"\n\tpsk="{escaped_pass}"\n}}\n'
-
-    old_config = _read_wpa_conf()
-
-    # If the config already has network blocks, add the new one at the top
-    # Otherwise create a minimal config
-    if old_config.strip():
-        # Remove any existing block for the same SSID
-        lines = old_config.splitlines(keepends=True)
-        filtered = []
-        in_block = False
-        for line in lines:
-            stripped = line.strip()
-            if stripped.startswith("network="):
-                in_block = True
-                filtered.append(line)
-            elif in_block:
-                if stripped == "}":
-                    in_block = False
-                filtered.append(line)
-            else:
-                filtered.append(line)
-        # If we stripped lines, that section is gone; rebuild
-        content = old_config.rstrip() + "\n\n" + new_block
-    else:
-        content = (
-            'ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev\n'
-            'update_config=1\n'
-            'country=US\n\n'
-            + new_block
-        )
-
+    """Write new credentials and restart wpa_supplicant."""
     try:
-        _write_wpa_conf(content)
-    except PermissionError:
-        return False, "Permission denied writing wpa_supplicant.conf (run as root)"
+        wpa_path().parent.mkdir(parents=True, exist_ok=True)
+        psk_line = f'\tpsk="{password}"\n' if password else "\tkey_mgmt=NONE\n"
+        wpa_conf = f"""ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=US
 
-    ok = _restart_networking()
-    if ok:
-        global _current_wifi
-        _current_wifi = {"ssid": ssid, "password": password}
-        return True, "WiFi config applied, reconnecting…"
-    else:
-        return False, "Config saved but network restart failed"
+network={{
+\tssid="{ssid}"
+{psk_line}}}
+"""
+        target = wpa_path() or WPA_FILE
+        target.write_text(wpa_conf)
+        subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"], capture_output=True, timeout=10)
+        return True, f"WiFi config written to {target}"
+    except Exception as e:
+        return False, str(e)
 
 
-# ── Bluetooth RFCOMM server ────────────────────────────────────────────────
+# ── AP mode ──────────────────────────────────────────────────────────────────
 
-_bt_agent_process = None
+def _write_hostapd_conf():
+    HOSTAPD_CONF.write_text(f"""interface={AP_IFACE}
+driver=nl80211
+ssid={AP_SSID}
+hw_mode=g
+channel={random.choice([1, 6, 11])}
+wmm_enabled=0
+macaddr_acl=0
+auth_algs=1
+ignore_broadcast_ssid=0
+wpa=0
+""")
 
 
-def _bt_agent_cleanup():
-    global _bt_agent_process
-    if _bt_agent_process is not None:
-        _bt_agent_process.terminate()
+def _write_dnsmasq_conf():
+    DNSMASQ_CONF.write_text(f"""interface={AP_IFACE}
+dhcp-range={AP_DHCP_RANGE}
+dhcp-option=3,{AP_GW}
+dhcp-option=6,{AP_GW}
+address=/#/{AP_GW}
+log-dhcp
+""")
+
+
+CAPTIVE_PAGE = """\
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>Hayward HeatPro — WiFi Setup</title>
+<style>
+*{{margin:0;padding:0;box-sizing:border-box}}
+body{{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#121212;color:#e0e0e0;display:flex;justify-content:center;align-items:center;min-height:100vh}}
+.card{{background:#1e1e1e;border-radius:16px;padding:32px;width:92%;max-width:400px;box-shadow:0 4px 24px rgba(0,0,0,.4)}}
+h1{{font-size:1.25rem;margin-bottom:4px;color:#fff}}
+.sub{{font-size:.8125rem;color:#888;margin-bottom:20px}}
+input{{width:100%;padding:12px 14px;margin-bottom:12px;border:1px solid #333;border-radius:10px;background:#2a2a2a;color:#e0e0e0;font-size:1rem;outline:none}}
+input:focus{{border-color:#4a9eff}}
+button{{width:100%;padding:14px;background:#4a9eff;color:#fff;border:none;border-radius:10px;font-size:1rem;font-weight:600;cursor:pointer}}
+button:active{{opacity:.8}}
+.msg{{margin-top:12px;font-size:.875rem;text-align:center;color:#888}}
+.msg.ok{{color:#4caf50}}
+.msg.err{{color:#ff5252}}
+</style>
+</head>
+<body>
+<div class="card">
+<h1>Hayward HeatPro</h1>
+<p class="sub">Enter your WiFi network to continue</p>
+<form id="form" method="post" action="/">
+<input type="text" id="ssid" name="ssid" placeholder="WiFi SSID" autocomplete="off" required>
+<input type="password" id="password" name="password" placeholder="Password (optional)">
+<button type="submit">Connect</button>
+</form>
+<div id="msg" class="msg"></div>
+</div>
+<script>
+document.getElementById('form').addEventListener('submit',async(e)=>{{
+e.preventDefault();const m=document.getElementById('msg');
+m.textContent='Connecting...';m.className='msg';
+try{{const r=await fetch('/',{{method:'POST',
+headers:{{'Content-Type':'application/json'}},
+body:JSON.stringify({{ssid:e.target.ssid.value,password:e.target.password.value}})}});
+const d=await r.json();
+if(d.ok){{m.textContent='Connected! The device will restart shortly.';m.className='msg ok'}}
+else{{m.textContent=d.message||'Failed';m.className='msg err'}}}}
+catch(e){{m.textContent='Error: '+e.message;m.className='msg err'}}}});
+</script>
+</body>
+</html>
+"""
+
+
+class CaptivePortalHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(CAPTIVE_PAGE.encode())
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length).decode("utf-8", errors="replace")
+
+        global _credentials_received
         try:
-            _bt_agent_process.wait(timeout=3)
-        except Exception:
-            _bt_agent_process.kill()
-        _bt_agent_process = None
+            data = json.loads(body)
+            ssid = data.get("ssid", "").strip()
+            password = data.get("password", "")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            # HTML form-urlencoded fallback
+            params = {}
+            for part in body.split("&"):
+                if "=" in part:
+                    k, v = part.split("=", 1)
+                    params[unquote_plus(k)] = unquote_plus(v)
+            ssid = params.get("ssid", "").strip()
+            password = params.get("password", "")
+
+        if not ssid:
+            self._respond(400, {"ok": False, "message": "SSID is required"})
+            return
+
+        ok, msg = apply_wifi_config(ssid, password)
+        if ok:
+            _credentials_received = (ssid, password)
+            self._respond(200, {"ok": True, "message": "Connected! Device will reconnect shortly."})
+            _exit_ap_mode.set()
+        else:
+            self._respond(500, {"ok": False, "message": msg})
+
+    def _respond(self, status, data):
+        body = json.dumps(data).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt, *args):
+        pass  # quiet
 
 
-def _bt_init():
-    """Initialize Bluetooth adapter for iOS-compatible SPP."""
-    global _bt_agent_process
+def _run_http_server():
+    server = HTTPServer((AP_GW, HTTP_PORT), CaptivePortalHandler)
+    server.timeout = 1.0
+    logger.info("HTTP server listening on %s:%d", AP_GW, HTTP_PORT)
+    while not _exit_ap_mode.is_set():
+        server.handle_request()
+    server.server_close()
 
-    # Load kernel module and power on Bluetooth adapter
-    subprocess.run(["modprobe", "rfcomm"], capture_output=True, timeout=5)
-    subprocess.run(["rfkill", "unblock", "bluetooth"], capture_output=True, timeout=10)
 
-    # Set HCI-level page/inquiry scan (hciconfig) + BlueZ-level config (bluetoothctl)
-    for cmd in [
-        ["hciconfig", "hci0", "piscan"],
-    ]:
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=10)
-        except Exception:
-            pass
+def _ap_up():
+    """Bring up the access point."""
+    logger.info("Starting AP mode: SSID=%s, IP=%s", AP_SSID, AP_GW)
 
-    # bluetoothctl is interactive — pipe all commands in one shot
-    btctl_cmds = (
-        "power on\n"
-        "discoverable on\n"
-        "pairable on\n"
-        f"system-alias {_bt_advertised_name}\n"
-        "quit\n"
+    _write_hostapd_conf()
+    _write_dnsmasq_conf()
+
+    # Configure interface
+    subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
+    subprocess.run(["ip", "addr", "add", f"{AP_GW}/24", "dev", AP_IFACE], capture_output=True, timeout=10)
+    subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
+
+    # Start hostapd
+    hostapd_proc = subprocess.Popen(
+        ["hostapd", str(HOSTAPD_CONF)],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     )
-    try:
-        subprocess.run(["bluetoothctl"], input=btctl_cmds, capture_output=True,
-                       text=True, timeout=15)
-    except Exception as e:
-        logger.warning("bluetoothctl init failed: %s", e)
 
-    # Start bt-agent as persistent pairing handler (keeps agent registered on D-Bus)
-    if _bt_agent_process is None or _bt_agent_process.poll() is not None:
+    # Start dnsmasq
+    dnsmasq_proc = subprocess.Popen(
+        ["dnsmasq", "-C", str(DNSMASQ_CONF), "--no-daemon"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    time.sleep(2)
+
+    return hostapd_proc, dnsmasq_proc
+
+
+def _ap_down(hostapd_proc, dnsmasq_proc):
+    """Tear down the access point."""
+    logger.info("Tearing down AP mode")
+
+    for proc in [hostapd_proc, dnsmasq_proc]:
+        if proc and proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.kill()
+
+    # Kill any lingering instances
+    for pname in ["hostapd", "dnsmasq"]:
+        subprocess.run(["pkill", "-f", f"hayward-{pname}"], capture_output=True, timeout=5)
+
+    # Restore wlan0
+    subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
+
+    # Clean up temp files
+    for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
         try:
-            _bt_agent_process = subprocess.Popen(
-                ["bt-agent", "-c", "NoInputNoOutput"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            logger.info("bt-agent started (pid %d)", _bt_agent_process.pid)
-        except FileNotFoundError:
-            logger.warning("bt-agent not found (install bluez-tools)")
-        except Exception as e:
-            logger.warning("bt-agent failed to start: %s", e)
-
-    # Register SPP SDP record so serial terminal apps can discover it
-    _register_spp_sdp()
-
-
-def _register_spp_sdp():
-    """Register SPP SDP record so serial terminal apps discover the device."""
-    for attempt in range(3):
-        try:
-            r = subprocess.run(
-                ["sdptool", "add", f"--channel={RFCOMM_CHANNEL}", "SP"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if r.returncode == 0:
-                break
-            logger.warning("sdptool attempt %d: %s", attempt + 1, r.stderr.strip() or r.stdout.strip())
-        except Exception as e:
-            logger.warning("sdptool attempt %d error: %s", attempt + 1, e)
-        time.sleep(1)
-
-    try:
-        r = subprocess.run(["sdptool", "browse", "local"], capture_output=True,
-                           text=True, timeout=10)
-        if r.returncode == 0:
-            if "Serial Port" in r.stdout:
-                logger.info("SPP SDP record verified")
-            else:
-                logger.warning("SPP record NOT found in SDP browse:\n%s",
-                               r.stdout[:500])
-    except Exception as e:
-        logger.warning("SDP browse failed: %s", e)
-
-
-def _bt_periodic_refresh():
-    """Refresh discoverable/pairable state and SDP record every 30 seconds."""
-    while True:
-        time.sleep(30)
-        try:
-            subprocess.run(["hciconfig", "hci0", "piscan"],
-                           capture_output=True, timeout=10)
+            f.unlink()
         except Exception:
             pass
-        for cmd in ("discoverable on\n", "pairable on\n"):
-            try:
-                subprocess.run(["bluetoothctl"], input=cmd,
-                               capture_output=True, text=True, timeout=10)
-            except Exception:
-                pass
-        _register_spp_sdp()
+
+    # Restart networking
+    subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
+    subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
 
 
-def _bt_addr():
-    """Get local Bluetooth adapter MAC as colon-separated string."""
-    try:
-        return Path("/sys/class/bluetooth/hci0/address").read_text().strip()
-    except Exception:
-        pass
-    try:
-        r = subprocess.run(["hciconfig", "hci0"], capture_output=True, text=True, timeout=5)
-        for line in r.stdout.splitlines():
-            if "BD Address" in line:
-                return line.split()[-1]
-    except Exception:
-        pass
-    return ""  # BDADDR_ANY
+def ap_mode_handler() -> dict:
+    """Enter AP mode, block until credentials received or timeout (10 min)."""
+    global _credentials_received, _exit_ap_mode
+    _credentials_received = None
+    _exit_ap_mode.clear()
+
+    hostapd_proc, dnsmasq_proc = _ap_up()
+
+    http_thread = threading.Thread(target=_run_http_server, daemon=True)
+    http_thread.start()
+
+    # Wait for credentials (up to 10 minutes)
+    timeout = 600
+    _exit_ap_mode.wait(timeout=timeout)
+
+    _ap_down(hostapd_proc, dnsmasq_proc)
+
+    if _credentials_received:
+        return {"ok": True, "ssid": _credentials_received[0], "message": "Credentials received and applied"}
+
+    return {"ok": False, "message": "Timed out waiting for credentials"}
 
 
-def run_bt_server():
-    """Run the Bluetooth RFCOMM server."""
-    _bt_init()
+# ── File-based watcher (for Docker backend communication) ────────────────────
 
-    addr = _bt_addr()
-
-    # Retry loop: rfcomm module or bluetoothd might not be ready
-    sock = None
-    for attempt in range(10):
-        try:
-            sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
-                                  socket.BTPROTO_RFCOMM)
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            sock.bind((addr, RFCOMM_CHANNEL))
-            break
-        except OSError as e:
-            logger.warning("bind attempt %d failed: %s", attempt + 1, e)
-            if sock is not None:
-                sock.close()
-                sock = None
-            if attempt == 0:
-                subprocess.run(["modprobe", "rfcomm"], capture_output=True, timeout=5)
-            time.sleep(2)
-    if sock is None:
-        logger.error("Could not bind RFCOMM socket after 10 attempts")
-        return
-    sock.listen(1)
-    sock.settimeout(30.0)
-
-    logger.info("Bluetooth RFCOMM server listening on channel %d as '%s'",
-                RFCOMM_CHANNEL, _bt_advertised_name)
-
+def _file_watcher():
+    """Poll for trigger files from the Docker backend every 2 seconds."""
     while True:
-        try:
-            client, addr = sock.accept()
-            client.settimeout(15.0)
-            logger.info("Connection from %s", addr)
+        time.sleep(2)
 
+        # AP mode trigger
+        trigger = PROVISIONING_DIR / "trigger_ap.json"
+        if trigger.exists():
             try:
-                data = client.recv(4096)
-                if not data:
-                    client.close()
-                    continue
-
-                payload = data.decode("utf-8", errors="replace").strip()
-                logger.info("Received: %s", payload[:200])
-
-                # Try JSON
-                parsed = json.loads(payload)
-                ssid = parsed.get("ssid", "")
-                password = parsed.get("password", "")
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                # Try simple format: WIFI:SSID:PASSWORD
-                if payload.startswith("WIFI:"):
-                    parts = payload.split(":", 2)
-                    if len(parts) == 3:
-                        ssid, password = parts[1], parts[2]
-                    else:
-                        client.send(b"ERR: invalid format (use WIFI:ssid:password)\n")
-                        client.close()
-                        continue
-                else:
-                    client.send(b"ERR: send JSON {\"ssid\":\"...\",\"password\":\"...\"}\n")
-                    client.close()
-                    continue
+                data = json.loads(trigger.read_text())
+                trigger.unlink()
+                logger.info("AP mode triggered via file")
+                result = ap_mode_handler()
+                (PROVISIONING_DIR / "ap_result.json").write_text(json.dumps(result))
             except Exception as e:
-                client.send(f"ERR: {e}\n".encode())
-                client.close()
-                continue
+                logger.error("AP trigger error: %s", e)
 
-            ok, msg = apply_wifi_config(ssid, password)
-            response = "OK" if ok else f"ERR: {msg}"
-            client.send(f"{response}\n".encode())
-            logger.info("Response: %s", response)
-            client.close()
+        # WiFi config request
+        wifi_req = PROVISIONING_DIR / "wifi_request.json"
+        if wifi_req.exists():
+            try:
+                data = json.loads(wifi_req.read_text())
+                wifi_req.unlink()
+                ok, msg = apply_wifi_config(data.get("ssid", ""), data.get("password", ""))
+                (PROVISIONING_DIR / "wifi_result.json").write_text(json.dumps({"ok": ok, "message": msg}))
+            except Exception as e:
+                logger.error("WiFi request error: %s", e)
 
-        except socket.timeout:
-            continue
-        except OSError as e:
-            logger.error("Socket error: %s", e)
-            time.sleep(2)
-            continue
-        except Exception as e:
-            logger.error("Unexpected error: %s", e)
-            time.sleep(2)
-            continue
+        # Update status for backend
+        try:
+            ssid = current_wifi_ssid()
+            PROVISIONING_DIR.mkdir(parents=True, exist_ok=True)
+            (PROVISIONING_DIR / "status.json").write_text(json.dumps({
+                "connected": ssid is not None,
+                "ssid": ssid,
+                "timestamp": time.time(),
+            }))
+        except Exception:
+            pass
 
 
-# ── Unix socket (for backend communication) ────────────────────────────────
+# ── Unix socket handler (normal mode) ────────────────────────────────────────
 
 def _handle_unix_connection(conn):
     try:
-        data = conn.recv(4096)
-        payload = json.loads(data.decode("utf-8").strip())
+        raw = conn.recv(4096)
+        payload = json.loads(raw.decode("utf-8").strip())
         action = payload.get("action", "")
+
         if action == "status":
             ssid = current_wifi_ssid()
             conn.send(json.dumps({
                 "connected": ssid is not None,
                 "ssid": ssid,
-                "advertising": _bt_advertised_name,
             }).encode())
+
         elif action == "set_wifi":
             ok, msg = apply_wifi_config(
                 payload.get("ssid", ""),
                 payload.get("password", ""),
             )
             conn.send(json.dumps({"ok": ok, "message": msg}).encode())
+
+        elif action == "enter_ap_mode":
+            conn.send(json.dumps({"ok": True, "message": "Entering AP mode", "ssid": AP_SSID}).encode())
+            conn.close()
+            result = ap_mode_handler()
+            return
+
         else:
             conn.send(json.dumps({"ok": False, "message": "unknown action"}).encode())
+
     except Exception as e:
         conn.send(json.dumps({"ok": False, "message": str(e)}).encode())
     finally:
-        conn.close()
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def run_unix_server():
-    """Run a Unix socket server for backend communication."""
     if UNIX_SOCKET_PATH.exists():
         UNIX_SOCKET_PATH.unlink()
 
@@ -413,24 +412,21 @@ def run_unix_server():
             continue
 
 
-# ── entry point ────────────────────────────────────────────────────────────
+# ── Entry point ──────────────────────────────────────────────────────────────
 
 def main():
-    import atexit
-    import threading
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-    atexit.register(_bt_agent_cleanup)
+    logger.info("Hayward HeatPro provisioning daemon starting")
 
-    # Start Unix socket server in background
-    unix_thread = threading.Thread(target=run_unix_server, daemon=True)
-    unix_thread.start()
+    watcher_thread = threading.Thread(target=_file_watcher, daemon=True)
+    watcher_thread.start()
 
-    # Periodic Bluetooth state refresher
-    refresh_thread = threading.Thread(target=_bt_periodic_refresh, daemon=True)
-    refresh_thread.start()
-
-    # Start Bluetooth server (blocking)
-    run_bt_server()
+    run_unix_server()
 
 
 if __name__ == "__main__":

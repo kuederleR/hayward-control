@@ -1,14 +1,11 @@
 [Unit]
-Description=Hayward HeatPro Bluetooth Provisioning
-After=bluetooth.service network.target
-Requires=bluetooth.service
-Wants=rfkill.service
+Description=Hayward HeatPro WiFi AP Provisioning
+After=network.target
+Wants=network.target
 
 [Service]
 Type=simple
-ExecStartPre=/usr/sbin/modprobe rfcomm
-ExecStartPre=/usr/sbin/rfkill unblock bluetooth
-ExecStartPre=/bin/sleep 3
+ExecStartPre=/usr/bin/env mkdir -p /var/run/hayward
 ExecStart=/usr/local/bin/hayward-provisioning-server
 Restart=on-failure
 RestartSec=5

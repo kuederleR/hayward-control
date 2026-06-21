@@ -3,41 +3,44 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-echo "==> Installing Hayward HeatPro Bluetooth provisioning service"
+echo "==> Installing Hayward HeatPro WiFi AP provisioning service"
 
-# 0. Install Bluetooth packages if missing
-echo "  → Installing Bluetooth packages"
+# 0. Install packages
+echo "  → Installing hostapd and dnsmasq"
 sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends \
-  bluez bluez-tools rfkill
-echo "  → Ensuring user is in bluetooth group"
-sudo usermod -aG bluetooth "${SUDO_USER:-$USER}" 2>/dev/null || true
+  hostapd dnsmasq wireless-tools
+sudo systemctl stop hostapd dnsmasq 2>/dev/null || true
+sudo systemctl disable hostapd dnsmasq 2>/dev/null || true
 
-# 1. Copy the provisioning server
+# 1. Create socket directory
+echo "  → Creating /var/run/hayward"
+sudo mkdir -p /var/run/hayward
+sudo chmod 755 /var/run/hayward
+
+# 2. Copy the provisioning server
 echo "  → Installing /usr/local/bin/hayward-provisioning-server"
 sudo cp "$SCRIPT_DIR/provisioning_server.py" /usr/local/bin/hayward-provisioning-server
 sudo chmod 755 /usr/local/bin/hayward-provisioning-server
 
-# 2. Install systemd service
+# 3. Install systemd service
 echo "  → Installing systemd service"
 sudo cp "$SCRIPT_DIR/hayward-provisioning.service" /etc/systemd/system/
 sudo systemctl daemon-reload
 
-# 3. Enable and start
+# 4. Enable and start
 echo "  → Enabling and starting service"
 sudo systemctl enable hayward-provisioning
 sudo systemctl restart hayward-provisioning
 
-# 4. Show status
+# 5. Show status
 echo ""
 echo "==> Service status:"
 sudo systemctl status hayward-provisioning --no-pager
 
 echo ""
-echo "==> Bluetooth provisioning installed."
-echo "  - Look for 'Hayward-HeatPro' in your phone's Bluetooth settings"
-echo "  - Pair from your phone's Bluetooth settings"
-echo "  - Connect with a serial terminal app (channel 1, SPP)"
-echo "  - Send: {\"ssid\":\"MyNetwork\",\"password\":\"secret\"}"
+echo "==> WiFi AP provisioning installed."
+echo "  - Look for 'Hayward-HeatPro-Setup' in your phone's WiFi list"
+echo "  - Connect to it, then open http://192.168.4.1"
+echo "  - Enter your WiFi credentials and submit"
 echo ""
 echo "  - View logs: journalctl -u hayward-provisioning -f"
-echo "  - Check adapter: hciconfig -a"
