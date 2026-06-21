@@ -259,14 +259,38 @@ def _bt_periodic_refresh():
         _register_spp_sdp()
 
 
+def _bt_addr():
+    """Get local Bluetooth adapter MAC address."""
+    try:
+        addr = Path("/sys/class/bluetooth/hci0/address").read_text().strip()
+        if addr:
+            return addr
+    except Exception:
+        pass
+    try:
+        r = subprocess.run(["hciconfig", "hci0"], capture_output=True,
+                           text=True, timeout=5)
+        for line in r.stdout.splitlines():
+            if "BD Address" in line:
+                return line.split()[-1]
+    except Exception:
+        pass
+    return ""
+
+
 def run_bt_server():
     """Run the Bluetooth RFCOMM server."""
     _bt_init()
 
+    addr = _bt_addr()
+    if not addr:
+        logger.error("No Bluetooth adapter found")
+        return
+
     sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM,
                           socket.BTPROTO_RFCOMM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("", RFCOMM_CHANNEL))
+    sock.bind((addr, RFCOMM_CHANNEL))
     sock.listen(1)
     sock.settimeout(30.0)
 
