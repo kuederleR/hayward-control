@@ -259,7 +259,9 @@ def _ap_up():
 
     # Free wlan0 from all network management and set AP mode
     for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
-        subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=30)
+        r = subprocess.run(["systemctl", "is-enabled", svc], capture_output=True, timeout=10)
+        if r.returncode == 0:
+            subprocess.run(["systemctl", "stop", svc], capture_output=True, timeout=30)
     subprocess.run(["rfkill", "unblock", "wifi"], capture_output=True, timeout=5)
     subprocess.run(["iw", "reg", "set", "US"], capture_output=True, timeout=5)
     subprocess.run(["ip", "link", "set", AP_IFACE, "down"], capture_output=True, timeout=10)
@@ -339,34 +341,48 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
     subprocess.run(["ip", "addr", "flush", "dev", AP_IFACE], capture_output=True, timeout=10)
     subprocess.run(["ip", "link", "set", AP_IFACE, "up"], capture_output=True, timeout=10)
 
-    # Restart networking
+    # Restart networking — check each service exists first to avoid hangs
     for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
-        subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
+        try:
+            r = subprocess.run(["systemctl", "is-enabled", svc], capture_output=True, timeout=10)
+            if r.returncode == 0:
+                subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
+        except Exception as e:
+            logger.warning("skipping systemctl start %s: %s", svc, e)
     time.sleep(3)
 
     # Apply new credentials via wpa_cli now that wpa_supplicant is running
-    if ssid:
-        ok, msg = apply_wifi_via_wpa_cli(ssid, password)
-        logger.info("wpa_cli apply: %s — %s", ok, msg)
-    else:
-        subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
+    try:
+        if ssid:
+            ok, msg = apply_wifi_via_wpa_cli(ssid, password)
+            logger.info("wpa_cli apply: %s — %s", ok, msg)
+        else:
+            subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
+    except Exception as e:
+        logger.warning("wpa_cli apply failed: %s", e)
 
     # Wait for wpa_supplicant to connect
     connected = False
     for _ in range(30):
-        r = subprocess.run(["iw", "dev", AP_IFACE, "link"], capture_output=True, text=True, timeout=5)
-        if "Not connected" not in r.stdout and r.stdout.strip():
-            connected = True
-            break
+        try:
+            r = subprocess.run(["iw", "dev", AP_IFACE, "link"], capture_output=True, text=True, timeout=5)
+            if "Not connected" not in r.stdout and r.stdout.strip():
+                connected = True
+                break
+        except Exception:
+            pass
         time.sleep(1)
     if connected:
         logger.info("wpa_supplicant connected to new network, requesting IP")
     else:
         logger.warning("wpa_supplicant did not connect within 30s, trying dhclient anyway")
 
-    r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
-    if r.returncode != 0:
-        subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
+    try:
+        r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
+        if r.returncode != 0:
+            subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
+    except Exception as e:
+        logger.warning("dhclient failed: %s", e)
     if connected:
         logger.info("Network reconnected successfully")
 
