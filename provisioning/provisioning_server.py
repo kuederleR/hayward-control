@@ -68,8 +68,35 @@ def wpa_path() -> Path | None:
     return None
 
 
+def _nmcli_available() -> bool:
+    """Check if NetworkManager's nmcli is available."""
+    try:
+        r = subprocess.run(["which", "nmcli"], capture_output=True, timeout=5)
+        return r.returncode == 0
+    except Exception:
+        return False
+
+
+def _nmcli_connect(ssid: str, password: str) -> tuple[bool, str]:
+    """Connect to a WiFi network using NetworkManager's nmcli."""
+    try:
+        # Delete any existing profile for this SSID to avoid conflicts
+        subprocess.run(["nmcli", "connection", "delete", "id", ssid],
+                       capture_output=True, timeout=10)
+        r = subprocess.run([
+            "nmcli", "device", "wifi", "connect", ssid,
+            "password", password,
+            "ifname", AP_IFACE
+        ], capture_output=True, text=True, timeout=60)
+        if r.returncode == 0:
+            return True, r.stdout.strip()
+        return False, r.stderr.strip()
+    except Exception as e:
+        return False, str(e)
+
+
 def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
-    """Write new credentials to wpa_supplicant.conf."""
+    """Write new credentials to wpa_supplicant.conf (fallback if nmcli unavailable)."""
     try:
         target = wpa_path() or WPA_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -351,19 +378,18 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
             logger.warning("skipping systemctl start %s: %s", svc, e)
     time.sleep(3)
 
-    # Apply new credentials via wpa_cli now that wpa_supplicant is running
-    try:
-        if ssid:
-            ok, msg = apply_wifi_via_wpa_cli(ssid, password)
-            logger.info("wpa_cli apply: %s — %s", ok, msg)
-        else:
-            subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
-    except Exception as e:
-        logger.warning("wpa_cli apply failed: %s", e)
+    # Apply credentials — try nmcli first (NetworkManager), fall back to wpa_cli
+    use_nmcli = _nmcli_available()
+    if ssid and use_nmcli:
+        ok, msg = _nmcli_connect(ssid, password)
+        logger.info("nmcli connect: %s — %s", ok, msg)
+    elif ssid:
+        ok, msg = apply_wifi_via_wpa_cli(ssid, password)
+        logger.info("wpa_cli apply: %s — %s", ok, msg)
 
-    # Wait for wpa_supplicant to connect
+    # Wait for network connection
     connected = False
-    for _ in range(30):
+    for _ in range(60):
         try:
             r = subprocess.run(["iw", "dev", AP_IFACE, "link"], capture_output=True, text=True, timeout=5)
             if "Not connected" not in r.stdout and r.stdout.strip():
@@ -372,33 +398,13 @@ def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str 
         except Exception:
             pass
         time.sleep(1)
-    if connected:
-        logger.info("wpa_supplicant connected to new network, requesting IP")
-    else:
-        logger.warning("wpa_supplicant did not connect within 30s, trying dhclient anyway")
-
-    dhcp_ok = False
-    try:
-        r = subprocess.run(["dhclient", "-v", AP_IFACE], capture_output=True, timeout=30)
-        dhcp_ok = r.returncode == 0
-    except FileNotFoundError:
-        logger.info("dhclient not found, using dhcpcd")
-    except Exception as e:
-        logger.warning("dhclient error: %s", e)
-
-    if not dhcp_ok:
-        try:
-            r = subprocess.run(["dhcpcd", "-n", AP_IFACE], capture_output=True, timeout=30)
-            dhcp_ok = r.returncode == 0
-        except FileNotFoundError:
-            logger.info("dhcpcd -n not supported either")
-        except Exception as e:
-            logger.warning("dhcpcd renew error: %s", e)
 
     if connected:
+        # Wait a moment for DHCP to complete (NetworkManager/dhcpcd handle this)
+        time.sleep(3)
         logger.info("Network reconnected successfully")
     else:
-        logger.warning("WiFi may not be connected after AP mode")
+        logger.warning("WiFi not connected after AP mode teardown")
 
     # Clean up temp files
     for f in [HOSTAPD_CONF, DNSMASQ_CONF]:
