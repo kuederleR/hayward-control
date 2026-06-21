@@ -69,7 +69,7 @@ def wpa_path() -> Path | None:
 
 
 def apply_wifi_config(ssid: str, password: str) -> tuple[bool, str]:
-    """Write new credentials and restart wpa_supplicant."""
+    """Write new credentials to wpa_supplicant.conf."""
     try:
         target = wpa_path() or WPA_FILE
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -83,8 +83,34 @@ network={{
 {psk_line}}}
 """
         target.write_text(wpa_conf)
-        subprocess.run(["wpa_cli", "-i", "wlan0", "reconfigure"], capture_output=True, timeout=10)
         return True, f"WiFi config written to {target}"
+    except Exception as e:
+        return False, str(e)
+
+
+def apply_wifi_via_wpa_cli(ssid: str, password: str):
+    """Apply WiFi config to a running wpa_supplicant via wpa_cli."""
+    try:
+        subprocess.run(["wpa_cli", "-i", "wlan0", "remove_network", "all"],
+                       capture_output=True, timeout=10)
+        r = subprocess.run(["wpa_cli", "-i", "wlan0", "add_network"],
+                           capture_output=True, text=True, timeout=10)
+        net_id = r.stdout.strip()
+        subprocess.run(["wpa_cli", "-i", "wlan0", "set_network", net_id, "ssid", f'"{ssid}"'],
+                       capture_output=True, timeout=10)
+        if password:
+            subprocess.run(["wpa_cli", "-i", "wlan0", "set_network", net_id, "psk", f'"{password}"'],
+                           capture_output=True, timeout=10)
+        else:
+            subprocess.run(["wpa_cli", "-i", "wlan0", "set_network", net_id, "key_mgmt", "NONE"],
+                           capture_output=True, timeout=10)
+        subprocess.run(["wpa_cli", "-i", "wlan0", "enable_network", net_id],
+                       capture_output=True, timeout=10)
+        subprocess.run(["wpa_cli", "-i", "wlan0", "select_network", net_id],
+                       capture_output=True, timeout=10)
+        subprocess.run(["wpa_cli", "-i", "wlan0", "save_config"],
+                       capture_output=True, timeout=10)
+        return True, f"WiFi applied via wpa_cli (network id {net_id})"
     except Exception as e:
         return False, str(e)
 
@@ -293,7 +319,7 @@ def _ap_up():
     return hostapd_proc, dnsmasq_proc
 
 
-def _ap_down(hostapd_proc, dnsmasq_proc):
+def _ap_down(hostapd_proc, dnsmasq_proc, ssid: str | None = None, password: str = ""):
     """Tear down the access point."""
     logger.info("Tearing down AP mode")
 
@@ -317,9 +343,15 @@ def _ap_down(hostapd_proc, dnsmasq_proc):
     for svc in ["wpa_supplicant", "dhcpcd", "NetworkManager"]:
         subprocess.run(["systemctl", "start", svc], capture_output=True, timeout=30)
     time.sleep(3)
-    subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
 
-    # Wait for wpa_supplicant to connect to the new network
+    # Apply new credentials via wpa_cli now that wpa_supplicant is running
+    if ssid:
+        ok, msg = apply_wifi_via_wpa_cli(ssid, password)
+        logger.info("wpa_cli apply: %s — %s", ok, msg)
+    else:
+        subprocess.run(["wpa_cli", "-i", AP_IFACE, "reconfigure"], capture_output=True, timeout=10)
+
+    # Wait for wpa_supplicant to connect
     connected = False
     for _ in range(30):
         r = subprocess.run(["iw", "dev", AP_IFACE, "link"], capture_output=True, text=True, timeout=5)
@@ -369,10 +401,11 @@ def ap_mode_handler() -> dict:
     signaled = _exit_ap_mode.wait(timeout=timeout)
     logger.info("AP mode wait ended: signaled=%s, timeout=%ds", signaled, timeout)
 
-    _ap_down(hostapd_proc, dnsmasq_proc)
+    ssid, password = _credentials_received or (None, "")
+    _ap_down(hostapd_proc, dnsmasq_proc, ssid=ssid, password=password)
 
-    if _credentials_received:
-        return {"ok": True, "ssid": _credentials_received[0], "message": "Credentials received and applied"}
+    if ssid:
+        return {"ok": True, "ssid": ssid, "message": "Credentials received and applied"}
 
     return {"ok": False, "message": "Timed out waiting for credentials"}
 
